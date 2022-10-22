@@ -90,7 +90,7 @@ type Change struct {
 	Keys      Values
 	NewValues Values
 	OldValues Values
-	Snapshot  Values
+	// Snapshot  Values
 
 	ServerTransactionID                  string
 	RecordSequence                       string

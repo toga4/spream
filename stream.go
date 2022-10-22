@@ -94,13 +94,13 @@ func (t *partitionStream) handleDataChangeRecord(ctx context.Context, r *DataCha
 			NumberOfPartitionsInTransaction:      r.NumberOfPartitionsInTransaction,
 		}
 
-		if r.ModType == ModType_UPDATE {
-			snapshot, err := t.dao.getSnapshot(ctx, ch.TableName, ch.CommitTimestamp, ch.KeyColumns, ch.Columns, ch.Keys)
-			if err != nil {
-				return err
-			}
-			ch.Snapshot = snapshot
-		}
+		// if r.ModType == ModType_UPDATE {
+		// 	snapshot, err := t.dao.getSnapshot(ctx, ch.TableName, ch.CommitTimestamp, ch.KeyColumns, ch.Columns, ch.Keys)
+		// 	if err != nil {
+		// 		return err
+		// 	}
+		// 	ch.Snapshot = snapshot
+		// }
 
 		if err := t.changeHandler(ctx, ch); err != nil {
 			return err
