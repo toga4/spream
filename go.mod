@@ -3,13 +3,13 @@ module github.com/toga4/spream
 go 1.19
 
 require (
-	cloud.google.com/go v0.102.1
 	cloud.google.com/go/spanner v1.39.0
 	golang.org/x/sync v0.0.0-20220601150217-0de741cfad7f
 	google.golang.org/genproto v0.0.0-20220916134934-764224ccc2d1
 )
 
 require (
+	cloud.google.com/go v0.102.1 // indirect
 	cloud.google.com/go/compute v1.7.0 // indirect
 	github.com/census-instrumentation/opencensus-proto v0.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.1.1 // indirect
