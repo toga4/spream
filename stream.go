@@ -2,7 +2,6 @@ package spream
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"sort"
 	"time"
@@ -50,7 +49,7 @@ func (t *partitionStream) handle(ctx context.Context, records []*ChangeRecord) e
 }
 
 func (t *partitionStream) handleDataChangeRecord(ctx context.Context, r *DataChangeRecord) error {
-	dump(t.partitionToken, "data_change_record", r)
+	// dump(t.partitionToken, "data_change_record", r)
 
 	keyColumns := []Column{}
 	columns := []Column{}
@@ -114,12 +113,12 @@ func (t *partitionStream) handleDataChangeRecord(ctx context.Context, r *DataCha
 }
 
 func (t *partitionStream) handleHeartbeatRecord(ctx context.Context, record *HeartbeatRecord) error {
-	dump(t.partitionToken, "heartbeat_record", record)
+	// dump(t.partitionToken, "heartbeat_record", record)
 	return t.watermarker(ctx, string(t.partitionToken), record.Timestamp)
 }
 
 func (t *partitionStream) handleChildPartitionsRecord(ctx context.Context, record *ChildPartitionsRecord) error {
-	dump(t.partitionToken, "child_partitions_record", record)
+	// dump(t.partitionToken, "child_partitions_record", record)
 
 	for _, cp := range record.ChildPartitions {
 		p := Partition{
@@ -136,14 +135,14 @@ func (t *partitionStream) handleChildPartitionsRecord(ctx context.Context, recor
 	return t.watermarker(ctx, string(t.partitionToken), record.StartTimestamp)
 }
 
-func dump(partitionToken PartitionToken, recordType string, record interface{}) {
-	m := map[string]interface{}{
-		"partition_token": partitionToken,
-		"record_type":     recordType,
-		"record":          record,
-	}
+// func dump(partitionToken PartitionToken, recordType string, record interface{}) {
+// 	m := map[string]interface{}{
+// 		"partition_token": partitionToken,
+// 		"record_type":     recordType,
+// 		"record":          record,
+// 	}
 
-	if b, err := json.MarshalIndent(m, "", "  "); err == nil {
-		log.Printf("%s", b)
-	}
-}
+// 	if b, err := json.MarshalIndent(m, "", "  "); err == nil {
+// 		log.Printf("%s", b)
+// 	}
+// }
