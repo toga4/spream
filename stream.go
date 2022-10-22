@@ -2,7 +2,6 @@ package spream
 
 import (
 	"context"
-	"log"
 	"sort"
 	"time"
 )
@@ -59,8 +58,7 @@ func (t *partitionStream) handleDataChangeRecord(ctx context.Context, r *DataCha
 	// OrdinalPosition はテーブル作成時の DDL に定義されている順序が設定されている
 	// つまり ColumnTypes の順序と OrdinalPosition は必ずしも一致しない
 	var keyOrdinalPosition int64 = 0
-	for i, t := range r.ColumnTypes {
-		log.Printf("r.ColumnsTypes[%v]: %#v", i, t)
+	for _, t := range r.ColumnTypes {
 		cc := Column{
 			Name:               t.Name,
 			Type:               decodeColumnTypeJSONToType(t),
