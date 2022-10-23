@@ -59,7 +59,7 @@ func (t *Controller) StartWithPartitions(ctx context.Context, partitions ...Part
 		for {
 			select {
 			case p := <-t.partitionCh:
-				t.startTrack(ctx, p.PartitionToken, p.StartTimestamp)
+				t.StartTrack(ctx, p.PartitionToken, p.StartTimestamp)
 			case <-ctx.Done():
 				return ctx.Err()
 			}
@@ -67,13 +67,13 @@ func (t *Controller) StartWithPartitions(ctx context.Context, partitions ...Part
 	})
 
 	for _, p := range partitions {
-		t.startTrack(ctx, p.PartitionToken, p.StartTimestamp)
+		t.StartTrack(ctx, p.PartitionToken, p.StartTimestamp)
 	}
 
 	return t.wg.Wait()
 }
 
-func (t *Controller) startTrack(ctx context.Context, partitionToken PartitionToken, startTimestamp time.Time) {
+func (t *Controller) StartTrack(ctx context.Context, partitionToken PartitionToken, startTimestamp time.Time) {
 	if dup := t.trackingPartitions.add(partitionToken); dup {
 		return
 	}
