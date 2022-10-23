@@ -17,12 +17,16 @@ type partitionStream struct {
 
 	partitionCh chan<- Partition
 
-	watermarker Watermarker
-	changeSink  ChangeSink
+	changeSink        ChangeSink
+	watermarker       Watermarker
+	onPartitionClosed OnPartitionClosed
 }
 
 func (t *partitionStream) start(ctx context.Context) error {
-	return t.dao.query(ctx, t.streamName, t.startTimestamp, t.endTimestamp, t.partitionToken.asParameter(), t.heartbeatMilliseconds, t.handle)
+	if err := t.dao.query(ctx, t.streamName, t.startTimestamp, t.endTimestamp, t.partitionToken.asParameter(), t.heartbeatMilliseconds, t.handle); err != nil {
+		return err
+	}
+	return t.onPartitionClosed(ctx, string(t.partitionToken))
 }
 
 func (t *partitionStream) handle(ctx context.Context, records []*ChangeRecord) error {

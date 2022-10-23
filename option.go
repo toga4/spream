@@ -49,3 +49,13 @@ func (w withWatermarker) Apply(c *config) {
 func WithWatermarker(f Watermarker) Option {
 	return withWatermarker(f)
 }
+
+type withOnPartitionClosed OnPartitionClosed
+
+func (w withOnPartitionClosed) Apply(c *config) {
+	c.onPartitionClosed = OnPartitionClosed(w)
+}
+
+func WithOnPartitionClosed(f OnPartitionClosed) Option {
+	return withOnPartitionClosed(f)
+}

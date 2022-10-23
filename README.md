@@ -37,6 +37,7 @@ func main() {
 		changeStreamName,
 		changeSink,
 		spream.WithWatermarker(watermarker),
+		spream.WithOnPartitionClosed(onPartitionClosed),
 	)
 
 	partition := spream.Partition{
@@ -59,6 +60,11 @@ func changeSink(ctx context.Context, change *spream.Change) error {
 
 func watermarker(ctx context.Context, partitionToken string, timestamp time.Time) error {
 	log.Printf("watermark: %v : %s", partitionToken, timestamp)
+	return nil
+}
+
+func onPartitionClosed(ctx context.Context, partitionToken string) error {
+	log.Printf("partition closed: %v", partitionToken)
 	return nil
 }
 ```
