@@ -56,3 +56,91 @@ func (d *dao) query(
 			return nil
 		})
 }
+
+type ChangeRecord struct {
+	DataChangeRecords      []*DataChangeRecord      `spanner:"data_change_record"`
+	HeartbeatRecords       []*HeartbeatRecord       `spanner:"heartbeat_record"`
+	ChildPartitionsRecords []*ChildPartitionsRecord `spanner:"child_partitions_record"`
+}
+
+type DataChangeRecord struct {
+	CommitTimestamp                      time.Time     `spanner:"commit_timestamp"`
+	RecordSequence                       string        `spanner:"record_sequence"`
+	ServerTransactionID                  string        `spanner:"server_transaction_id"`
+	IsLastRecordInTransactionInPartition bool          `spanner:"is_last_record_in_transaction_in_partition"`
+	TableName                            string        `spanner:"table_name"`
+	ColumnTypes                          []*ColumnType `spanner:"column_types"`
+	Mods                                 []*Mod        `spanner:"mods"`
+	ModType                              ModType       `spanner:"mod_type"`
+	ValueCaptureType                     string        `spanner:"value_capture_type"`
+	NumberOfRecordsInTransaction         int64         `spanner:"number_of_records_in_transaction"`
+	NumberOfPartitionsInTransaction      int64         `spanner:"number_of_partitions_in_transaction"`
+	TransactionTag                       string        `spanner:"transaction_tag"`
+	IsSystemTransaction                  bool          `spanner:"is_system_transaction"`
+}
+
+type ColumnType struct {
+	Name            string           `spanner:"name"`
+	Type            spanner.NullJSON `spanner:"type"`
+	IsPrimaryKey    bool             `spanner:"is_primary_key"`
+	OrdinalPosition int64            `spanner:"ordinal_position"`
+}
+
+type Mod struct {
+	Keys      spanner.NullJSON `spanner:"keys"`
+	NewValues spanner.NullJSON `spanner:"new_values"`
+	OldValues spanner.NullJSON `spanner:"old_values"`
+}
+
+func (m *Mod) KeysMap() map[string]interface{} {
+	if m.Keys.IsNull() {
+		return nil
+	}
+	return m.Keys.Value.(map[string]interface{})
+}
+
+func (m *Mod) NewValuesMap() map[string]interface{} {
+	if m.NewValues.IsNull() {
+		return nil
+	}
+	return m.NewValues.Value.(map[string]interface{})
+}
+
+func (m *Mod) OldValuesMap() map[string]interface{} {
+	if m.OldValues.IsNull() {
+		return nil
+	}
+	return m.OldValues.Value.(map[string]interface{})
+}
+
+type HeartbeatRecord struct {
+	Timestamp time.Time `spanner:"timestamp"`
+}
+
+type ChildPartitionsRecord struct {
+	StartTimestamp  time.Time         `spanner:"start_timestamp"`
+	RecordSequence  string            `spanner:"record_sequence"`
+	ChildPartitions []*ChildPartition `spanner:"child_partitions"`
+}
+
+type ChildPartition struct {
+	Token                 string   `spanner:"token"`
+	ParentPartitionTokens []string `spanner:"parent_partition_tokens"`
+}
+
+func decodeColumnTypeJSONToType(t *ColumnType) Type {
+	m := t.Type.Value.(map[string]interface{})
+	code := TypeCode(m["code"].(string))
+
+	if t, ok := m["arrayElementType"].(map[string]interface{}); ok {
+		arrayElementType := TypeCode(t["code"].(string))
+		return Type{
+			Code:             code,
+			ArrayElementType: &arrayElementType,
+		}
+	}
+
+	return Type{
+		Code: code,
+	}
+}
