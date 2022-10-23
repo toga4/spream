@@ -36,7 +36,7 @@ func main() {
 		spannerClient,
 		changeStreamName,
 		changeSink,
-		spream.WithWatermarker(watermark),
+		spream.WithWatermarker(watermarker),
 	)
 
 	partition := spream.Partition{
