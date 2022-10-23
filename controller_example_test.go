@@ -1,4 +1,4 @@
-package spream
+package spream_test
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/spanner"
+	"github.com/toga4/spream"
 	sppb "google.golang.org/genproto/googleapis/spanner/v1"
 )
 
@@ -21,7 +22,7 @@ func ExampleNewController() {
 	defer spannerClient.Close()
 
 	changeStreamName := "FooStream"
-	c := NewController(spannerClient, changeStreamName, func(ctx context.Context, change *Change) error {
+	c := spream.NewController(spannerClient, changeStreamName, func(ctx context.Context, change *spream.Change) error {
 		log.Printf("changed: %v", change)
 		return nil
 	})
@@ -42,16 +43,16 @@ func ExampleNewController_withOptions() {
 	defer spannerClient.Close()
 
 	changeStreamName := "FooStream"
-	c := NewController(
+	c := spream.NewController(
 		spannerClient,
 		changeStreamName,
-		func(ctx context.Context, change *Change) error {
+		func(ctx context.Context, change *spream.Change) error {
 			log.Printf("Changed: %v", change)
 			return nil
 		},
-		WithHeartbeatMilliseconds(1000),
-		WithSpannerRequestPriority(sppb.RequestOptions_PRIORITY_LOW),
-		WithWatermarker(func(ctx context.Context, partitionToken string, timestamp time.Time) error {
+		spream.WithHeartbeatMilliseconds(1000),
+		spream.WithSpannerRequestPriority(sppb.RequestOptions_PRIORITY_LOW),
+		spream.WithWatermarker(func(ctx context.Context, partitionToken string, timestamp time.Time) error {
 			log.Printf("Watermark: %s : %s", partitionToken, timestamp)
 			return nil
 		}),
