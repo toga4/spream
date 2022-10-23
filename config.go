@@ -16,8 +16,8 @@ type config struct {
 	endTimestamp          *time.Time
 	heartbeatMilliseconds int64
 
-	watermarker   Watermarker
-	changeHandler ChangeHandler
+	watermarker Watermarker
+	changeSink  ChangeSink
 
 	partitionCh chan Partition
 }
@@ -41,7 +41,7 @@ func (c *config) newPartitionStream(partitionToken PartitionToken, startTimestam
 		partitionToken:        partitionToken,
 		heartbeatMilliseconds: c.heartbeatMilliseconds,
 		watermarker:           c.watermarker,
-		changeHandler:         c.changeHandler,
+		changeSink:            c.changeSink,
 		partitionCh:           c.partitionCh,
 	}
 }

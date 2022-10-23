@@ -17,8 +17,8 @@ type partitionStream struct {
 
 	partitionCh chan<- Partition
 
-	watermarker   Watermarker
-	changeHandler ChangeHandler
+	watermarker Watermarker
+	changeSink  ChangeSink
 }
 
 func (t *partitionStream) start(ctx context.Context) error {
@@ -94,7 +94,7 @@ func (t *partitionStream) handleDataChangeRecord(ctx context.Context, r *DataCha
 			NumberOfPartitionsInTransaction:      r.NumberOfPartitionsInTransaction,
 		}
 
-		if err := t.changeHandler(ctx, ch); err != nil {
+		if err := t.changeSink(ctx, ch); err != nil {
 			return err
 		}
 	}

@@ -12,7 +12,7 @@ import (
 func NewController(
 	spannerClient *spanner.Client,
 	changeStreamName string,
-	changeHandler ChangeHandler,
+	changeSink ChangeSink,
 	options ...Option,
 ) *Controller {
 	config := &config{
@@ -25,7 +25,7 @@ func NewController(
 	}
 	config.spannerClient = spannerClient
 	config.changeStreamName = changeStreamName
-	config.changeHandler = changeHandler
+	config.changeSink = changeSink
 	config.partitionCh = make(chan Partition)
 
 	return &Controller{
