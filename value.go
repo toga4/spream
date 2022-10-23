@@ -9,8 +9,7 @@ type Change struct {
 	TableName       string
 	CommitTimestamp time.Time
 
-	KeyColumns []Column
-	Columns    []Column
+	Columns []Column
 
 	Keys      map[string]interface{}
 	NewValues map[string]interface{}
@@ -32,10 +31,10 @@ const (
 )
 
 type Column struct {
-	Name               string
-	Type               Type
-	OrdinalPosition    int64
-	KeyOrdinalPosition int64
+	Name            string
+	Type            Type
+	IsPrimaryKey    bool
+	OrdinalPosition int64
 }
 
 type Type struct {

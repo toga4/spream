@@ -2,7 +2,8 @@ package spream
 
 import (
 	"context"
-	"sort"
+	"encoding/json"
+	"log"
 	"time"
 )
 
@@ -54,43 +55,26 @@ func (t *partitionStream) handle(ctx context.Context, records []*ChangeRecord) e
 func (t *partitionStream) handleDataChangeRecord(ctx context.Context, r *DataChangeRecord) error {
 	// dump(t.partitionToken, "data_change_record", r)
 
-	keyColumns := []Column{}
 	columns := []Column{}
-
-	// ColumnTypes の並びは PrimaryKey 列 → 残りの列 の順になっている
-	// このとき PrimaryKey 列が複数ある場合は ColumnTypes の先頭にその順序どおりに並んでいる
-	// OrdinalPosition はテーブル作成時の DDL に定義されている順序が設定されている
-	// つまり ColumnTypes の順序と OrdinalPosition は必ずしも一致しない
-	var keyOrdinalPosition int64 = 0
 	for _, t := range r.ColumnTypes {
 		cc := Column{
-			Name:               t.Name,
-			Type:               decodeColumnTypeJSONToType(t),
-			OrdinalPosition:    t.OrdinalPosition,
-			KeyOrdinalPosition: -1,
+			Name:            t.Name,
+			Type:            decodeColumnTypeJSONToType(t),
+			IsPrimaryKey:    t.IsPrimaryKey,
+			OrdinalPosition: t.OrdinalPosition,
 		}
-		if t.IsPrimaryKey {
-			keyOrdinalPosition++
-			cc.KeyOrdinalPosition = keyOrdinalPosition
-			keyColumns = append(keyColumns, cc)
-		} else {
-			columns = append(columns, cc)
-		}
+		columns = append(columns, cc)
 	}
-
-	sort.Slice(keyColumns, func(i, j int) bool { return keyColumns[i].KeyOrdinalPosition < keyColumns[j].KeyOrdinalPosition })
-	sort.Slice(columns, func(i, j int) bool { return columns[i].OrdinalPosition < columns[j].OrdinalPosition })
 
 	for _, m := range r.Mods {
 		ch := &Change{
 			ModType:                              r.ModType,
 			TableName:                            r.TableName,
 			CommitTimestamp:                      r.CommitTimestamp,
-			KeyColumns:                           keyColumns,
 			Columns:                              columns,
-			Keys:                                 m.KeysMap(),
-			NewValues:                            m.NewValuesMap(),
-			OldValues:                            m.OldValuesMap(),
+			Keys:                                 decodeNullJSONToMap(m.Keys),
+			NewValues:                            decodeNullJSONToMap(m.NewValues),
+			OldValues:                            decodeNullJSONToMap(m.OldValues),
 			ServerTransactionID:                  r.ServerTransactionID,
 			RecordSequence:                       r.RecordSequence,
 			IsLastRecordInTransactionInPartition: r.IsLastRecordInTransactionInPartition,
@@ -129,14 +113,14 @@ func (t *partitionStream) handleChildPartitionsRecord(ctx context.Context, recor
 	return t.watermarker(ctx, string(t.partitionToken), record.StartTimestamp)
 }
 
-// func dump(partitionToken PartitionToken, recordType string, record interface{}) {
-// 	m := map[string]interface{}{
-// 		"partition_token": partitionToken,
-// 		"record_type":     recordType,
-// 		"record":          record,
-// 	}
+func dump(partitionToken PartitionToken, recordType string, record interface{}) {
+	m := map[string]interface{}{
+		"partition_token": partitionToken,
+		"record_type":     recordType,
+		"record":          record,
+	}
 
-// 	if b, err := json.MarshalIndent(m, "", "  "); err == nil {
-// 		log.Printf("%s", b)
-// 	}
-// }
+	if b, err := json.MarshalIndent(m, "", "  "); err == nil {
+		log.Printf("%s", b)
+	}
+}

@@ -92,27 +92,6 @@ type Mod struct {
 	OldValues spanner.NullJSON `spanner:"old_values"`
 }
 
-func (m *Mod) KeysMap() map[string]interface{} {
-	if m.Keys.IsNull() {
-		return nil
-	}
-	return m.Keys.Value.(map[string]interface{})
-}
-
-func (m *Mod) NewValuesMap() map[string]interface{} {
-	if m.NewValues.IsNull() {
-		return nil
-	}
-	return m.NewValues.Value.(map[string]interface{})
-}
-
-func (m *Mod) OldValuesMap() map[string]interface{} {
-	if m.OldValues.IsNull() {
-		return nil
-	}
-	return m.OldValues.Value.(map[string]interface{})
-}
-
 type HeartbeatRecord struct {
 	Timestamp time.Time `spanner:"timestamp"`
 }
@@ -143,4 +122,11 @@ func decodeColumnTypeJSONToType(t *ColumnType) Type {
 	return Type{
 		Code: code,
 	}
+}
+
+func decodeNullJSONToMap(j spanner.NullJSON) map[string]interface{} {
+	if j.IsNull() {
+		return nil
+	}
+	return j.Value.(map[string]interface{})
 }
