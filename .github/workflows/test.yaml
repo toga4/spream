@@ -1,0 +1,27 @@
+name: Test
+
+on:
+  schedule:
+    - cron: "0 0 * * 1"
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-go@v3
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: google-github-actions/auth@v1
+        with:
+          workload_identity_provider: projects/1050537848145/locations/global/workloadIdentityPools/pool-github-actions/providers/provider-github-actions
+          service_account: github-actions@spream.iam.gserviceaccount.com
+      - run: go test -v ./...
