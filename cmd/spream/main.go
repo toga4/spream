@@ -62,7 +62,7 @@ Options:
 
 	fs.StringVar(&flags.database, "database", "", "")
 	fs.StringVar(&flags.streamName, "stream", "", "")
-	fs.StringVar(&flags.metadataTableName, "metadata-table", flags.database, "")
+	fs.StringVar(&flags.metadataTableName, "metadata-table", "", "")
 	fs.StringVar(&flags.metadataDatabase, "metadata-database", flags.database, "")
 	fs.DurationVar(&flags.heartbeatInterval, "heartbeat-interval", 10*time.Second, "")
 
@@ -78,6 +78,9 @@ Options:
 	if flags.database == "" || flags.streamName == "" {
 		fs.Usage()
 		return nil, errors.New("database and stream is required")
+	}
+	if flags.metadataDatabase == "" {
+		flags.metadataDatabase = flags.database
 	}
 
 	if start != "" {
