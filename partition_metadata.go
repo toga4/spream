@@ -20,10 +20,10 @@ type PartitionMetadata struct {
 type State string
 
 const (
-	StateCreated   State = "Created"
-	StateScheduled State = "Scheduled"
-	StateRunning   State = "Running"
-	StateFinished  State = "Finished"
+	StateCreated   State = "CREATED"
+	StateScheduled State = "SCHEDULED"
+	StateRunning   State = "RUNNING"
+	StateFinished  State = "FINISHED"
 )
 
 const (
