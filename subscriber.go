@@ -46,7 +46,7 @@ type config struct {
 	spannerRequestPriority spannerpb.RequestOptions_Priority
 }
 
-type option interface {
+type Option interface {
 	Apply(*config)
 }
 
@@ -60,7 +60,7 @@ func (o withStartTimestamp) Apply(c *config) {
 //
 // The value must be within the retention period of the change stream and before the current time.
 // Default value is current timestamp.
-func WithStartTimestamp(startTimestamp time.Time) option {
+func WithStartTimestamp(startTimestamp time.Time) Option {
 	return withStartTimestamp(startTimestamp)
 }
 
@@ -74,7 +74,7 @@ func (o withEndTimestamp) Apply(c *config) {
 //
 // The value must be within the retention period of the change stream and must be after the start timestamp.
 // If not set, read latest changes until canceled.
-func WithEndTimestamp(endTimestamp time.Time) option {
+func WithEndTimestamp(endTimestamp time.Time) Option {
 	return withEndTimestamp(endTimestamp)
 }
 
@@ -87,7 +87,7 @@ func (o withHeartbeatInterval) Apply(c *config) {
 // WithHeartbeatInterval set the heartbeat interval for read change streams.
 //
 // Default value is 10 seconds.
-func WithHeartbeatInterval(heartbeatInterval time.Duration) option {
+func WithHeartbeatInterval(heartbeatInterval time.Duration) Option {
 	return withHeartbeatInterval(heartbeatInterval)
 }
 
@@ -100,7 +100,7 @@ func (o withSpannerRequestPriotiry) Apply(c *config) {
 // WithSpannerRequestPriotiry set the request priority option for read change streams.
 //
 // Default value is unspecified, equivalent to high.
-func WithSpannerRequestPriotiry(priority spannerpb.RequestOptions_Priority) option {
+func WithSpannerRequestPriotiry(priority spannerpb.RequestOptions_Priority) Option {
 	return withSpannerRequestPriotiry(priority)
 }
 
@@ -116,7 +116,7 @@ func NewSubscriber(
 	client *spanner.Client,
 	streamName string,
 	partitionStorage PartitionStorage,
-	options ...option,
+	options ...Option,
 ) *Subscriber {
 	c := &config{
 		startTimestamp:    nowFunc(),
