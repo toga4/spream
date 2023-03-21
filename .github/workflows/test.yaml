@@ -1,12 +1,9 @@
 name: Test
 
 on:
+  workflow_call:
   schedule:
     - cron: "0 0 * * 1"
-  push:
-    branches:
-      - main
-  pull_request:
 
 jobs:
   test:
@@ -16,10 +13,9 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v3
-      - uses: actions/setup-go@v3
+      - uses: actions/setup-go@v4
         with:
           go-version-file: go.mod
-          cache: true
       - uses: google-github-actions/auth@v1
         with:
           workload_identity_provider: projects/1050537848145/locations/global/workloadIdentityPools/pool-github-actions/providers/provider-github-actions
