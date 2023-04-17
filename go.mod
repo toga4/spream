@@ -7,7 +7,7 @@ require (
 	github.com/google/go-cmp v0.5.9
 	github.com/ory/dockertest/v3 v3.10.0
 	golang.org/x/sync v0.1.0
-	google.golang.org/api v0.117.0
+	google.golang.org/api v0.118.0
 	google.golang.org/grpc v1.54.0
 )
 
