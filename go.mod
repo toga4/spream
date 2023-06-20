@@ -6,7 +6,7 @@ require (
 	cloud.google.com/go/spanner v1.46.0
 	github.com/google/go-cmp v0.5.9
 	github.com/ory/dockertest/v3 v3.10.0
-	golang.org/x/sync v0.2.0
+	golang.org/x/sync v0.3.0
 	google.golang.org/api v0.128.0
 	google.golang.org/grpc v1.55.0
 )
