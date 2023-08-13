@@ -74,45 +74,13 @@ const (
 )
 
 func (s *SpannerPartitionStorage) CreateTableIfNotExists(ctx context.Context) error {
-	exists, err := s.existsTable(ctx)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return nil
-	}
-	return s.createTable(ctx)
-}
-
-func (s *SpannerPartitionStorage) existsTable(ctx context.Context) (bool, error) {
-	stmt := spanner.Statement{
-		SQL: "SELECT 1 FROM information_schema.tables WHERE table_catalog = '' AND table_schema = '' AND table_name = @tableName",
-		Params: map[string]interface{}{
-			"tableName": s.tableName,
-		},
-	}
-
-	iter := s.client.Single().QueryWithOptions(ctx, stmt, spanner.QueryOptions{Priority: s.requestPriority})
-	defer iter.Stop()
-
-	if _, err := iter.Next(); err != nil {
-		if err == iterator.Done {
-			return false, nil
-		}
-		return false, err
-	}
-
-	return true, nil
-}
-
-func (s *SpannerPartitionStorage) createTable(ctx context.Context) error {
 	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx)
 	if err != nil {
 		return err
 	}
 	defer databaseAdminClient.Close()
 
-	stmt := fmt.Sprintf(`CREATE TABLE %[1]s (
+	stmt := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %[1]s (
   %[2]s STRING(MAX) NOT NULL,
   %[3]s ARRAY<STRING(MAX)> NOT NULL,
   %[4]s TIMESTAMP NOT NULL,
