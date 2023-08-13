@@ -149,7 +149,7 @@ func TestSpannerPartitionStorage_CreateTableIfNotExists(t *testing.T) {
 		t.Errorf("Read from %s after SpannerPartitionStorage.CreateTableIfNotExists() = %v, want %v", storage.tableName, err, iterator.Done)
 	}
 
-	existsTable, err := storage.existsTable(ctx)
+	existsTable, err := existsTable(ctx, client, storage.tableName)
 	if err != nil {
 		t.Error(err)
 		return
@@ -157,6 +157,25 @@ func TestSpannerPartitionStorage_CreateTableIfNotExists(t *testing.T) {
 	if !existsTable {
 		t.Errorf("SpannerPartitionStorage.existsTable() = %v, want %v", existsTable, false)
 	}
+}
+
+func existsTable(ctx context.Context, client *spanner.Client, tableName string) (bool, error) {
+	iter := client.Single().Query(ctx, spanner.Statement{
+		SQL: "SELECT 1 FROM information_schema.tables WHERE table_catalog = '' AND table_schema = '' AND table_name = @tableName",
+		Params: map[string]interface{}{
+			"tableName": tableName,
+		},
+	})
+	defer iter.Stop()
+
+	if _, err := iter.Next(); err != nil {
+		if err == iterator.Done {
+			return false, nil
+		}
+		return false, err
+	}
+
+	return true, nil
 }
 
 func setupSpannerPartitionStorage(t *testing.T, ctx context.Context) *SpannerPartitionStorage {
@@ -176,7 +195,7 @@ func setupSpannerPartitionStorage(t *testing.T, ctx context.Context) *SpannerPar
 		tableName: t.Name(),
 	}
 
-	if err := storage.createTable(ctx); err != nil {
+	if err := storage.CreateTableIfNotExists(ctx); err != nil {
 		t.Error(err)
 		return storage
 	}
