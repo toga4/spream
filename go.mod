@@ -3,11 +3,11 @@ module github.com/toga4/spream
 go 1.19
 
 require (
-	cloud.google.com/go/spanner v1.49.0
+	cloud.google.com/go/spanner v1.50.0
 	github.com/google/go-cmp v0.5.9
 	github.com/ory/dockertest/v3 v3.10.0
-	golang.org/x/sync v0.3.0
-	google.golang.org/api v0.143.0
+	golang.org/x/sync v0.4.0
+	google.golang.org/api v0.146.0
 	google.golang.org/grpc v1.58.2
 )
 
