@@ -7,6 +7,8 @@ jobs:
   comment:
     runs-on: ubuntu-latest
     if: startsWith(github.head_ref, 'dependabot/')
+    permissions:
+      pull-requests: write
     steps:
       - name: Comment to merge dependabot PR
         uses: actions/github-script@v7
