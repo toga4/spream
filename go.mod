@@ -8,7 +8,7 @@ require (
 	github.com/ory/dockertest/v3 v3.10.0
 	golang.org/x/sync v0.7.0
 	google.golang.org/api v0.172.0
-	google.golang.org/grpc v1.63.0
+	google.golang.org/grpc v1.63.2
 )
 
 require (
