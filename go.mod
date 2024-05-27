@@ -3,7 +3,7 @@ module github.com/toga4/spream
 go 1.19
 
 require (
-	cloud.google.com/go/spanner v1.62.0
+	cloud.google.com/go/spanner v1.63.0
 	github.com/google/go-cmp v0.6.0
 	github.com/ory/dockertest/v3 v3.10.0
 	golang.org/x/sync v0.7.0
@@ -12,7 +12,7 @@ require (
 )
 
 require (
-	cloud.google.com/go v0.113.0 // indirect
+	cloud.google.com/go v0.114.0 // indirect
 	cloud.google.com/go/auth v0.4.1 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.2 // indirect
 	cloud.google.com/go/compute/metadata v0.3.0 // indirect
