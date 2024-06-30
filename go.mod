@@ -1,6 +1,8 @@
 module github.com/toga4/spream
 
-go 1.19
+go 1.22
+
+toolchain go1.22.4
 
 require (
 	cloud.google.com/go/spanner v1.62.0
