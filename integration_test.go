@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"strconv"
 	"testing"
@@ -27,7 +27,6 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	rand.Seed(time.Now().UnixNano())
 	tearDown := setup()
 	exitCode := m.Run()
 	tearDown()
