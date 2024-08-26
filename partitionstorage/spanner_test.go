@@ -2,6 +2,7 @@ package partitionstorage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -157,6 +158,15 @@ func TestSpannerPartitionStorage_CreateTableIfNotExists(t *testing.T) {
 	if !existsTable {
 		t.Errorf("SpannerPartitionStorage.existsTable() = %v, want %v", existsTable, false)
 	}
+
+	indexNames, err := getTableIndexNames(ctx, client, storage.tableName)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	if len(indexNames) != 3 {
+		t.Errorf("SpannerPartitionStorage.getTableIndexNames() = %v, want %v", len(indexNames), 3)
+	}
 }
 
 func existsTable(ctx context.Context, client *spanner.Client, tableName string) (bool, error) {
@@ -176,6 +186,34 @@ func existsTable(ctx context.Context, client *spanner.Client, tableName string) 
 	}
 
 	return true, nil
+}
+
+func getTableIndexNames(ctx context.Context, client *spanner.Client, tableName string) ([]string, error) {
+	iter := client.Single().Query(ctx, spanner.Statement{
+		SQL: "SELECT index_name FROM information_schema.indexes where table_name = @tableName",
+		Params: map[string]interface{}{
+			"tableName": tableName,
+		},
+	})
+	defer iter.Stop()
+
+	expectedNames := make([]string, 3)
+	for {
+		name := ""
+		r, err := iter.Next()
+		if err != nil {
+			if errors.Is(err, iterator.Done) {
+				break
+			}
+			return nil, err
+		}
+		if err := r.ColumnByName("index_name", &name); err != nil {
+			return nil, err
+		}
+		expectedNames = append(expectedNames, name)
+	}
+
+	return expectedNames, nil
 }
 
 func setupSpannerPartitionStorage(t *testing.T, ctx context.Context) *SpannerPartitionStorage {
@@ -582,5 +620,4 @@ func TestSpannerPartitionStorage_Update(t *testing.T) {
 			t.Errorf("UpdateWatermark(ctx, %+v, %q): got = %+v, want %+v", partitions[0], timestamp, got, want)
 		}
 	})
-
 }
