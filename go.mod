@@ -5,12 +5,12 @@ go 1.22
 toolchain go1.22.4
 
 require (
-	cloud.google.com/go/spanner v1.68.0
+	cloud.google.com/go/spanner v1.69.0
 	github.com/google/go-cmp v0.6.0
 	github.com/ory/dockertest/v3 v3.11.0
 	golang.org/x/sync v0.8.0
 	google.golang.org/api v0.199.0
-	google.golang.org/grpc v1.67.0
+	google.golang.org/grpc v1.67.1
 )
 
 require (
