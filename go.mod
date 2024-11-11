@@ -1,22 +1,21 @@
 module github.com/toga4/spream
 
 go 1.22
-
-toolchain go1.22.4
+toolchain go1.22.9
 
 require (
-	cloud.google.com/go/spanner v1.71.0
+	cloud.google.com/go/spanner v1.72.0
 	github.com/google/go-cmp v0.6.0
 	github.com/ory/dockertest/v3 v3.11.0
-	golang.org/x/sync v0.8.0
-	google.golang.org/api v0.204.0
-	google.golang.org/grpc v1.67.1
+	golang.org/x/sync v0.9.0
+	google.golang.org/api v0.205.0
+	google.golang.org/grpc v1.68.0
 )
 
 require (
-	cel.dev/expr v0.16.0 // indirect
+	cel.dev/expr v0.16.1 // indirect
 	cloud.google.com/go v0.116.0 // indirect
-	cloud.google.com/go/auth v0.10.0 // indirect
+	cloud.google.com/go/auth v0.10.1 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.5 // indirect
 	cloud.google.com/go/compute/metadata v0.5.2 // indirect
 	cloud.google.com/go/iam v1.2.1 // indirect
@@ -31,7 +30,7 @@ require (
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/census-instrumentation/opencensus-proto v0.4.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/cncf/xds/go v0.0.0-20240822171458-6449f94b4d59 // indirect
+	github.com/cncf/xds/go v0.0.0-20240905190251-b4127c9b8d78 // indirect
 	github.com/containerd/continuity v0.4.3 // indirect
 	github.com/docker/cli v26.1.4+incompatible // indirect
 	github.com/docker/docker v27.1.1+incompatible // indirect
