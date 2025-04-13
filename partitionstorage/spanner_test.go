@@ -162,7 +162,7 @@ func TestSpannerPartitionStorage_CreateTableIfNotExists(t *testing.T) {
 func existsTable(ctx context.Context, client *spanner.Client, tableName string) (bool, error) {
 	iter := client.Single().Query(ctx, spanner.Statement{
 		SQL: "SELECT 1 FROM information_schema.tables WHERE table_catalog = '' AND table_schema = '' AND table_name = @tableName",
-		Params: map[string]interface{}{
+		Params: map[string]any{
 			"tableName": tableName,
 		},
 	})
@@ -273,7 +273,7 @@ func TestSpannerPartitionStorage_Read(t *testing.T) {
 	timestamp := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	insert := func(token string, start time.Time, state spream.State) *spanner.Mutation {
-		return spanner.InsertMap(storage.tableName, map[string]interface{}{
+		return spanner.InsertMap(storage.tableName, map[string]any{
 			columnPartitionToken:  token,
 			columnParentTokens:    []string{},
 			columnStartTimestamp:  start,
@@ -431,7 +431,7 @@ func TestSpannerPartitionStorage_Update(t *testing.T) {
 	}
 
 	insert := func(p *spream.PartitionMetadata) *spanner.Mutation {
-		return spanner.InsertMap(storage.tableName, map[string]interface{}{
+		return spanner.InsertMap(storage.tableName, map[string]any{
 			columnPartitionToken:  p.PartitionToken,
 			columnParentTokens:    p.ParentTokens,
 			columnStartTimestamp:  p.StartTimestamp,

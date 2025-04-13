@@ -90,9 +90,9 @@ const (
 
 // Mod contains the keys and the values of the changed records.
 type Mod struct {
-	Keys      map[string]interface{} `json:"keys,omitempty"`
-	NewValues map[string]interface{} `json:"new_values,omitempty"`
-	OldValues map[string]interface{} `json:"old_values,omitempty"`
+	Keys      map[string]any `json:"keys,omitempty"`
+	NewValues map[string]any `json:"new_values,omitempty"`
+	OldValues map[string]any `json:"old_values,omitempty"`
 }
 
 type ModType string
@@ -156,10 +156,10 @@ func (r *dataChangeRecord) decodeToNonSpannerType() *DataChangeRecord {
 }
 
 func decodeColumnTypeJSONToType(columnType spanner.NullJSON) Type {
-	m := columnType.Value.(map[string]interface{})
+	m := columnType.Value.(map[string]any)
 	code := TypeCode(m["code"].(string))
 
-	if aet, ok := m["array_element_type"].(map[string]interface{}); ok {
+	if aet, ok := m["array_element_type"].(map[string]any); ok {
 		arrayElementType := TypeCode(aet["code"].(string))
 		return Type{
 			Code:             code,
@@ -170,9 +170,9 @@ func decodeColumnTypeJSONToType(columnType spanner.NullJSON) Type {
 	return Type{Code: code}
 }
 
-func decodeNullJSONToMap(j spanner.NullJSON) map[string]interface{} {
+func decodeNullJSONToMap(j spanner.NullJSON) map[string]any {
 	if j.IsNull() {
 		return nil
 	}
-	return j.Value.(map[string]interface{})
+	return j.Value.(map[string]any)
 }
