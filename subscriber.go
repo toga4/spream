@@ -228,7 +228,7 @@ var errDone = errors.New("all partitions have been processed")
 func (s *Subscriber) detectNewPartitions(ctx context.Context) error {
 	minWatermarkPartition, err := s.partitionStorage.GetUnfinishedMinWatermarkPartition(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get unfinished min watarmark partition: %w", err)
+		return fmt.Errorf("failed to get unfinished min watermark partition: %w", err)
 	}
 
 	if minWatermarkPartition == nil {
