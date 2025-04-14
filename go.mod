@@ -5,7 +5,7 @@ go 1.23.0
 toolchain go1.24.1
 
 require (
-	cloud.google.com/go/spanner v1.78.0
+	cloud.google.com/go/spanner v1.79.0
 	github.com/google/go-cmp v0.7.0
 	github.com/ory/dockertest/v3 v3.12.0
 	golang.org/x/sync v0.13.0
