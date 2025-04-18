@@ -97,7 +97,7 @@ Options:
 			fs.Usage()
 			return nil, fmt.Errorf("invalid end timestamp: %v", err)
 		}
-		flags.startTimestamp = t
+		flags.endTimestamp = t
 	}
 	if priority != "" {
 		switch priority {
