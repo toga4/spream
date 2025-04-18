@@ -82,7 +82,7 @@ func (s *InmemoryPartitionStorage) GetSchedulablePartitions(ctx context.Context,
 	return partitions, nil
 }
 
-func (s *InmemoryPartitionStorage) AddChildPartitions(ctx context.Context, parent *spream.PartitionMetadata, r *spream.ChildPartitionsRecord) error {
+func (s *InmemoryPartitionStorage) AddChildPartitions(ctx context.Context, endTimestamp time.Time, heartbeatMillis int64, r *spream.ChildPartitionsRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -91,8 +91,8 @@ func (s *InmemoryPartitionStorage) AddChildPartitions(ctx context.Context, paren
 			PartitionToken:  v.Token,
 			ParentTokens:    v.ParentPartitionTokens,
 			StartTimestamp:  r.StartTimestamp,
-			EndTimestamp:    parent.EndTimestamp,
-			HeartbeatMillis: parent.HeartbeatMillis,
+			EndTimestamp:    endTimestamp,
+			HeartbeatMillis: heartbeatMillis,
 			State:           spream.StateCreated,
 			Watermark:       r.StartTimestamp,
 		}
@@ -102,13 +102,13 @@ func (s *InmemoryPartitionStorage) AddChildPartitions(ctx context.Context, paren
 	return nil
 }
 
-func (s *InmemoryPartitionStorage) UpdateToScheduled(ctx context.Context, partitions []*spream.PartitionMetadata) error {
+func (s *InmemoryPartitionStorage) UpdateToScheduled(ctx context.Context, partitionTokens []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	for _, p := range partitions {
-		p = s.m[p.PartitionToken]
+	for _, partitionToken := range partitionTokens {
+		p := s.m[partitionToken]
 		p.ScheduledAt = &now
 		p.State = spream.StateScheduled
 	}
@@ -116,37 +116,37 @@ func (s *InmemoryPartitionStorage) UpdateToScheduled(ctx context.Context, partit
 	return nil
 }
 
-func (s *InmemoryPartitionStorage) UpdateToRunning(ctx context.Context, partition *spream.PartitionMetadata) error {
+func (s *InmemoryPartitionStorage) UpdateToRunning(ctx context.Context, partitionToken string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := time.Now()
 
-	p := s.m[partition.PartitionToken]
+	p := s.m[partitionToken]
 	p.RunningAt = &now
 	p.State = spream.StateRunning
 
 	return nil
 }
 
-func (s *InmemoryPartitionStorage) UpdateToFinished(ctx context.Context, partition *spream.PartitionMetadata) error {
+func (s *InmemoryPartitionStorage) UpdateToFinished(ctx context.Context, partitionToken string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := time.Now()
 
-	p := s.m[partition.PartitionToken]
+	p := s.m[partitionToken]
 	p.FinishedAt = &now
 	p.State = spream.StateFinished
 
 	return nil
 }
 
-func (s *InmemoryPartitionStorage) UpdateWatermark(ctx context.Context, partition *spream.PartitionMetadata, watermark time.Time) error {
+func (s *InmemoryPartitionStorage) UpdateWatermark(ctx context.Context, partitionToken string, watermark time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.m[partition.PartitionToken].Watermark = watermark
+	s.m[partitionToken].Watermark = watermark
 
 	return nil
 }

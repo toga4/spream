@@ -32,11 +32,11 @@ type PartitionStorage interface {
 	GetInterruptedPartitions(ctx context.Context) ([]*PartitionMetadata, error)
 	InitializeRootPartition(ctx context.Context, startTimestamp time.Time, endTimestamp time.Time, heartbeatInterval time.Duration) error
 	GetSchedulablePartitions(ctx context.Context, minWatermark time.Time) ([]*PartitionMetadata, error)
-	AddChildPartitions(ctx context.Context, parentPartition *PartitionMetadata, childPartitionsRecord *ChildPartitionsRecord) error
-	UpdateToScheduled(ctx context.Context, partitions []*PartitionMetadata) error
-	UpdateToRunning(ctx context.Context, partition *PartitionMetadata) error
-	UpdateToFinished(ctx context.Context, partition *PartitionMetadata) error
-	UpdateWatermark(ctx context.Context, partition *PartitionMetadata, watermark time.Time) error
+	AddChildPartitions(ctx context.Context, endTimestamp time.Time, heartbeatMillis int64, childPartitionsRecord *ChildPartitionsRecord) error
+	UpdateToScheduled(ctx context.Context, partitionTokens []string) error
+	UpdateToRunning(ctx context.Context, partitionToken string) error
+	UpdateToFinished(ctx context.Context, partitionToken string) error
+	UpdateWatermark(ctx context.Context, partitionToken string, watermark time.Time) error
 }
 
 type config struct {
@@ -245,7 +245,11 @@ func (s *Subscriber) detectNewPartitions(ctx context.Context) error {
 		return nil
 	}
 
-	if err := s.partitionStorage.UpdateToScheduled(ctx, partitions); err != nil {
+	partitionTokens := make([]string, 0, len(partitions))
+	for _, p := range partitions {
+		partitionTokens = append(partitionTokens, p.PartitionToken)
+	}
+	if err := s.partitionStorage.UpdateToScheduled(ctx, partitionTokens); err != nil {
 		return fmt.Errorf("failed to update to scheduled: %w", err)
 	}
 
@@ -260,7 +264,7 @@ func (s *Subscriber) detectNewPartitions(ctx context.Context) error {
 }
 
 func (s *Subscriber) queryChangeStream(ctx context.Context, p *PartitionMetadata) error {
-	if err := s.partitionStorage.UpdateToRunning(ctx, p); err != nil {
+	if err := s.partitionStorage.UpdateToRunning(ctx, p.PartitionToken); err != nil {
 		return fmt.Errorf("failed to update to running: %w", err)
 	}
 
@@ -293,7 +297,7 @@ func (s *Subscriber) queryChangeStream(ctx context.Context, p *PartitionMetadata
 		return err
 	}
 
-	if err := s.partitionStorage.UpdateToFinished(ctx, p); err != nil {
+	if err := s.partitionStorage.UpdateToFinished(ctx, p.PartitionToken); err != nil {
 		return fmt.Errorf("failed to update to finished: %w", err)
 	}
 
@@ -327,14 +331,14 @@ func (s *Subscriber) handle(ctx context.Context, p *PartitionMetadata, records [
 			watermarker.set(record.Timestamp)
 		}
 		for _, record := range cr.ChildPartitionsRecords {
-			if err := s.partitionStorage.AddChildPartitions(ctx, p, record); err != nil {
+			if err := s.partitionStorage.AddChildPartitions(ctx, p.EndTimestamp, p.HeartbeatMillis, record); err != nil {
 				return fmt.Errorf("failed to add child partitions: %w", err)
 			}
 			watermarker.set(record.StartTimestamp)
 		}
 	}
 
-	if err := s.partitionStorage.UpdateWatermark(ctx, p, watermarker.get()); err != nil {
+	if err := s.partitionStorage.UpdateWatermark(ctx, p.PartitionToken, watermarker.get()); err != nil {
 		return fmt.Errorf("failed to update watermark: %w", err)
 	}
 

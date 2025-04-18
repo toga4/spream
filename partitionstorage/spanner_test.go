@@ -370,7 +370,7 @@ func TestSpannerPartitionStorage_AddChildPartitions(t *testing.T) {
 			{Token: "token2", ParentPartitionTokens: []string{"parent1"}},
 		},
 	}
-	if err := storage.AddChildPartitions(ctx, parent, record); err != nil {
+	if err := storage.AddChildPartitions(ctx, endTimestamp, heartbeatMillis, record); err != nil {
 		t.Errorf("GetSchedulablePartitions(ctx, %+v, %+v): %v", parent, record, err)
 		return
 	}
@@ -454,7 +454,7 @@ func TestSpannerPartitionStorage_Update(t *testing.T) {
 	}
 
 	t.Run("UpdateToScheduled", func(t *testing.T) {
-		if err := storage.UpdateToScheduled(ctx, partitions); err != nil {
+		if err := storage.UpdateToScheduled(ctx, []string{partitions[0].PartitionToken, partitions[1].PartitionToken}); err != nil {
 			t.Errorf("UpdateToScheduled(ctx, %+v): %v", partitions, err)
 			return
 		}
@@ -489,7 +489,7 @@ func TestSpannerPartitionStorage_Update(t *testing.T) {
 	})
 
 	t.Run("UpdateToRunning", func(t *testing.T) {
-		if err := storage.UpdateToRunning(ctx, partitions[0]); err != nil {
+		if err := storage.UpdateToRunning(ctx, partitions[0].PartitionToken); err != nil {
 			t.Errorf("UpdateToRunning(ctx, %+v): %v", partitions[0], err)
 			return
 		}
@@ -520,7 +520,7 @@ func TestSpannerPartitionStorage_Update(t *testing.T) {
 	})
 
 	t.Run("UpdateToFinished", func(t *testing.T) {
-		if err := storage.UpdateToFinished(ctx, partitions[0]); err != nil {
+		if err := storage.UpdateToFinished(ctx, partitions[0].PartitionToken); err != nil {
 			t.Errorf("UpdateToFinished(ctx, %+v): %v", partitions[0], err)
 			return
 		}
@@ -553,7 +553,7 @@ func TestSpannerPartitionStorage_Update(t *testing.T) {
 	t.Run("UpdateWatermark", func(t *testing.T) {
 		timestamp := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
 
-		if err := storage.UpdateWatermark(ctx, partitions[0], timestamp); err != nil {
+		if err := storage.UpdateWatermark(ctx, partitions[0].PartitionToken, timestamp); err != nil {
 			t.Errorf("UpdateWatermark(ctx, %+v, %q): %v", partitions[0], timestamp, err)
 			return
 		}

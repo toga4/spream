@@ -222,14 +222,14 @@ func (s *SpannerPartitionStorage) GetSchedulablePartitions(ctx context.Context, 
 	return partitions, nil
 }
 
-func (s *SpannerPartitionStorage) AddChildPartitions(ctx context.Context, parent *spream.PartitionMetadata, r *spream.ChildPartitionsRecord) error {
+func (s *SpannerPartitionStorage) AddChildPartitions(ctx context.Context, endTimestamp time.Time, heartbeatMillis int64, r *spream.ChildPartitionsRecord) error {
 	for _, p := range r.ChildPartitions {
 		m := spanner.InsertMap(s.tableName, map[string]interface{}{
 			columnPartitionToken:  p.Token,
 			columnParentTokens:    p.ParentPartitionTokens,
 			columnStartTimestamp:  r.StartTimestamp,
-			columnEndTimestamp:    parent.EndTimestamp,
-			columnHeartbeatMillis: parent.HeartbeatMillis,
+			columnEndTimestamp:    endTimestamp,
+			columnHeartbeatMillis: heartbeatMillis,
 			columnState:           spream.StateCreated,
 			columnWatermark:       r.StartTimestamp,
 			columnCreatedAt:       spanner.CommitTimestamp,
@@ -247,11 +247,11 @@ func (s *SpannerPartitionStorage) AddChildPartitions(ctx context.Context, parent
 	return nil
 }
 
-func (s *SpannerPartitionStorage) UpdateToScheduled(ctx context.Context, partitions []*spream.PartitionMetadata) error {
-	mutations := make([]*spanner.Mutation, 0, len(partitions))
-	for _, p := range partitions {
+func (s *SpannerPartitionStorage) UpdateToScheduled(ctx context.Context, partitionTokens []string) error {
+	mutations := make([]*spanner.Mutation, 0, len(partitionTokens))
+	for _, partitionToken := range partitionTokens {
 		m := spanner.UpdateMap(s.tableName, map[string]interface{}{
-			columnPartitionToken: p.PartitionToken,
+			columnPartitionToken: partitionToken,
 			columnState:          spream.StateScheduled,
 			columnScheduledAt:    spanner.CommitTimestamp,
 		})
@@ -262,9 +262,9 @@ func (s *SpannerPartitionStorage) UpdateToScheduled(ctx context.Context, partiti
 	return err
 }
 
-func (s *SpannerPartitionStorage) UpdateToRunning(ctx context.Context, partition *spream.PartitionMetadata) error {
+func (s *SpannerPartitionStorage) UpdateToRunning(ctx context.Context, partitionToken string) error {
 	m := spanner.UpdateMap(s.tableName, map[string]interface{}{
-		columnPartitionToken: partition.PartitionToken,
+		columnPartitionToken: partitionToken,
 		columnState:          spream.StateRunning,
 		columnRunningAt:      spanner.CommitTimestamp,
 	})
@@ -273,9 +273,9 @@ func (s *SpannerPartitionStorage) UpdateToRunning(ctx context.Context, partition
 	return err
 }
 
-func (s *SpannerPartitionStorage) UpdateToFinished(ctx context.Context, partition *spream.PartitionMetadata) error {
+func (s *SpannerPartitionStorage) UpdateToFinished(ctx context.Context, partitionToken string) error {
 	m := spanner.UpdateMap(s.tableName, map[string]interface{}{
-		columnPartitionToken: partition.PartitionToken,
+		columnPartitionToken: partitionToken,
 		columnState:          spream.StateFinished,
 		columnFinishedAt:     spanner.CommitTimestamp,
 	})
@@ -284,9 +284,9 @@ func (s *SpannerPartitionStorage) UpdateToFinished(ctx context.Context, partitio
 	return err
 }
 
-func (s *SpannerPartitionStorage) UpdateWatermark(ctx context.Context, partition *spream.PartitionMetadata, watermark time.Time) error {
+func (s *SpannerPartitionStorage) UpdateWatermark(ctx context.Context, partitionToken string, watermark time.Time) error {
 	m := spanner.UpdateMap(s.tableName, map[string]interface{}{
-		columnPartitionToken: partition.PartitionToken,
+		columnPartitionToken: partitionToken,
 		columnWatermark:      watermark,
 	})
 
