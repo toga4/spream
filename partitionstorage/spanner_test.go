@@ -14,8 +14,8 @@ import (
 	"cloud.google.com/go/spanner/admin/database/apiv1/databasepb"
 	instance "cloud.google.com/go/spanner/admin/instance/apiv1"
 	"cloud.google.com/go/spanner/admin/instance/apiv1/instancepb"
-	"github.com/ory/dockertest/v3"
-	"github.com/ory/dockertest/v3/docker"
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/wait"
 	"github.com/toga4/spream"
 	"google.golang.org/api/iterator"
 )
@@ -40,43 +40,43 @@ func TestMain(m *testing.M) {
 func launchEmulatorOnDocker() func() {
 	ctx := context.Background()
 
-	pool, err := dockertest.NewPool("")
+	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:        "gcr.io/cloud-spanner-emulator/emulator:latest",
+			ExposedPorts: []string{"9010/tcp"},
+			WaitingFor:   wait.ForListeningPort("9010/tcp"),
+		},
+		Started: true,
+	})
 	if err != nil {
-		log.Fatalf("Could not connect to docker: %v", err)
+		log.Fatalf("Could not launch emulator on docker: %v", err)
 	}
-	pool.MaxWait = 10 * time.Second
-
-	resource, err := pool.RunWithOptions(
-		&dockertest.RunOptions{
-			Repository: "gcr.io/cloud-spanner-emulator/emulator",
-			Tag:        "latest",
-		},
-		func(config *docker.HostConfig) {
-			config.AutoRemove = true
-			config.RestartPolicy = docker.RestartPolicy{Name: "no"}
-		},
-	)
-	if err != nil {
-		log.Fatalf("Could not start resource: %v", err)
+	terminateFunc := func() {
+		if err := container.Terminate(ctx); err != nil {
+			log.Fatalf("Could not terminate emulator on docker: %v", err)
+		}
 	}
 
-	os.Setenv("SPANNER_EMULATOR_HOST", resource.GetHostPort("9010/tcp"))
+	host, err := container.Host(ctx)
+	if err != nil {
+		log.Fatalf("Could not get host: %v", err)
+	}
 
-	if err := pool.Retry(func() error {
-		return createInstance(ctx)
-	}); err != nil {
+	port, err := container.MappedPort(ctx, "9010/tcp")
+	if err != nil {
+		log.Fatalf("Could not get port: %v", err)
+	}
+
+	os.Setenv("SPANNER_EMULATOR_HOST", fmt.Sprintf("%s:%s", host, port.Port()))
+
+	if err := createInstance(ctx); err != nil {
 		log.Fatalf("Could not create instance: %v", err)
 	}
-
 	if err := createDatabase(ctx); err != nil {
 		log.Fatalf("Could not create database: %v", err)
 	}
 
-	return func() {
-		if err := pool.Purge(resource); err != nil {
-			log.Fatalf("Could not purge resource: %s", err)
-		}
-	}
+	return terminateFunc
 }
 
 func createInstance(ctx context.Context) error {

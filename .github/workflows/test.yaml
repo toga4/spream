@@ -1,7 +1,6 @@
 name: Test
 
 on:
-  workflow_call:
   schedule:
     - cron: "0 0 * * 1"
 
