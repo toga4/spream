@@ -45,7 +45,7 @@ func (s *InmemoryPartitionStorage) GetUnfinishedMinWatermarkPartition(ctx contex
 }
 
 func (s *InmemoryPartitionStorage) GetInterruptedPartitions(ctx context.Context) ([]*spream.PartitionMetadata, error) {
-	// InmemoryPartitionStorage can't return any partitions
+	// InmemoryPartitionStorage is volatile and can't have interrupted partitions thus always returns nil
 	return nil, nil
 }
 
