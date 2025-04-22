@@ -62,6 +62,9 @@ func (s *InmemoryPartitionStorage) InitializeRootPartition(ctx context.Context, 
 		State:           spream.StateCreated,
 		Watermark:       startTimestamp,
 		CreatedAt:       time.Now(),
+		ScheduledAt:     nil,
+		RunningAt:       nil,
+		FinishedAt:      nil,
 	}
 	s.m[p.PartitionToken] = p
 
@@ -95,6 +98,10 @@ func (s *InmemoryPartitionStorage) AddChildPartitions(ctx context.Context, endTi
 			HeartbeatMillis: heartbeatMillis,
 			State:           spream.StateCreated,
 			Watermark:       r.StartTimestamp,
+			CreatedAt:       time.Now(),
+			ScheduledAt:     nil,
+			RunningAt:       nil,
+			FinishedAt:      nil,
 		}
 		s.m[p.PartitionToken] = p
 	}
