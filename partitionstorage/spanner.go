@@ -126,7 +126,7 @@ func (s *SpannerPartitionStorage) CreateTableIfNotExists(ctx context.Context) er
 func (s *SpannerPartitionStorage) GetUnfinishedMinWatermarkPartition(ctx context.Context) (*spream.PartitionMetadata, error) {
 	stmt := spanner.Statement{
 		SQL: fmt.Sprintf("SELECT * FROM %s WHERE State != @state ORDER BY Watermark ASC LIMIT 1", s.tableName),
-		Params: map[string]interface{}{
+		Params: map[string]any{
 			"state": spream.StateFinished,
 		},
 	}
@@ -155,7 +155,7 @@ func (s *SpannerPartitionStorage) GetUnfinishedMinWatermarkPartition(ctx context
 func (s *SpannerPartitionStorage) GetInterruptedPartitions(ctx context.Context) ([]*spream.PartitionMetadata, error) {
 	stmt := spanner.Statement{
 		SQL: fmt.Sprintf("SELECT * FROM %s WHERE State IN UNNEST(@states) ORDER BY Watermark ASC", s.tableName),
-		Params: map[string]interface{}{
+		Params: map[string]any{
 			"states": []spream.State{spream.StateScheduled, spream.StateRunning},
 		},
 	}
@@ -178,7 +178,7 @@ func (s *SpannerPartitionStorage) GetInterruptedPartitions(ctx context.Context) 
 }
 
 func (s *SpannerPartitionStorage) InitializeRootPartition(ctx context.Context, startTimestamp time.Time, endTimestamp time.Time, heartbeatInterval time.Duration) error {
-	m := spanner.InsertOrUpdateMap(s.tableName, map[string]interface{}{
+	m := spanner.InsertOrUpdateMap(s.tableName, map[string]any{
 		columnPartitionToken:  spream.RootPartitionToken,
 		columnParentTokens:    []string{},
 		columnStartTimestamp:  startTimestamp,
@@ -199,7 +199,7 @@ func (s *SpannerPartitionStorage) InitializeRootPartition(ctx context.Context, s
 func (s *SpannerPartitionStorage) GetSchedulablePartitions(ctx context.Context, minWatermark time.Time) ([]*spream.PartitionMetadata, error) {
 	stmt := spanner.Statement{
 		SQL: fmt.Sprintf("SELECT * FROM %s WHERE State = @state AND StartTimestamp >= @minWatermark ORDER BY StartTimestamp ASC", s.tableName),
-		Params: map[string]interface{}{
+		Params: map[string]any{
 			"state":        spream.StateCreated,
 			"minWatermark": minWatermark,
 		},
@@ -224,7 +224,7 @@ func (s *SpannerPartitionStorage) GetSchedulablePartitions(ctx context.Context, 
 
 func (s *SpannerPartitionStorage) AddChildPartitions(ctx context.Context, endTimestamp time.Time, heartbeatMillis int64, r *spream.ChildPartitionsRecord) error {
 	for _, p := range r.ChildPartitions {
-		m := spanner.InsertMap(s.tableName, map[string]interface{}{
+		m := spanner.InsertMap(s.tableName, map[string]any{
 			columnPartitionToken:  p.Token,
 			columnParentTokens:    p.ParentPartitionTokens,
 			columnStartTimestamp:  r.StartTimestamp,
@@ -250,7 +250,7 @@ func (s *SpannerPartitionStorage) AddChildPartitions(ctx context.Context, endTim
 func (s *SpannerPartitionStorage) UpdateToScheduled(ctx context.Context, partitionTokens []string) error {
 	mutations := make([]*spanner.Mutation, 0, len(partitionTokens))
 	for _, partitionToken := range partitionTokens {
-		m := spanner.UpdateMap(s.tableName, map[string]interface{}{
+		m := spanner.UpdateMap(s.tableName, map[string]any{
 			columnPartitionToken: partitionToken,
 			columnState:          spream.StateScheduled,
 			columnScheduledAt:    spanner.CommitTimestamp,
@@ -263,7 +263,7 @@ func (s *SpannerPartitionStorage) UpdateToScheduled(ctx context.Context, partiti
 }
 
 func (s *SpannerPartitionStorage) UpdateToRunning(ctx context.Context, partitionToken string) error {
-	m := spanner.UpdateMap(s.tableName, map[string]interface{}{
+	m := spanner.UpdateMap(s.tableName, map[string]any{
 		columnPartitionToken: partitionToken,
 		columnState:          spream.StateRunning,
 		columnRunningAt:      spanner.CommitTimestamp,
@@ -274,7 +274,7 @@ func (s *SpannerPartitionStorage) UpdateToRunning(ctx context.Context, partition
 }
 
 func (s *SpannerPartitionStorage) UpdateToFinished(ctx context.Context, partitionToken string) error {
-	m := spanner.UpdateMap(s.tableName, map[string]interface{}{
+	m := spanner.UpdateMap(s.tableName, map[string]any{
 		columnPartitionToken: partitionToken,
 		columnState:          spream.StateFinished,
 		columnFinishedAt:     spanner.CommitTimestamp,
@@ -285,7 +285,7 @@ func (s *SpannerPartitionStorage) UpdateToFinished(ctx context.Context, partitio
 }
 
 func (s *SpannerPartitionStorage) UpdateWatermark(ctx context.Context, partitionToken string, watermark time.Time) error {
-	m := spanner.UpdateMap(s.tableName, map[string]interface{}{
+	m := spanner.UpdateMap(s.tableName, map[string]any{
 		columnPartitionToken: partitionToken,
 		columnWatermark:      watermark,
 	})

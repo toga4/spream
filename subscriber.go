@@ -174,7 +174,6 @@ func (s *Subscriber) Subscribe(ctx context.Context, consumer Consumer) error {
 		return fmt.Errorf("failed to get interrupted partitions: %w", err)
 	}
 	for _, p := range interruptedPartitions {
-		p := p
 		s.eg.Go(func() error {
 			return s.queryChangeStream(ctx, p)
 		})
@@ -229,7 +228,7 @@ var errDone = errors.New("all partitions have been processed")
 func (s *Subscriber) detectNewPartitions(ctx context.Context) error {
 	minWatermarkPartition, err := s.partitionStorage.GetUnfinishedMinWatermarkPartition(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get unfinished min watarmark partition: %w", err)
+		return fmt.Errorf("failed to get unfinished min watermark partition: %w", err)
 	}
 
 	if minWatermarkPartition == nil {
@@ -254,7 +253,6 @@ func (s *Subscriber) detectNewPartitions(ctx context.Context) error {
 	}
 
 	for _, p := range partitions {
-		p := p
 		s.eg.Go(func() error {
 			return s.queryChangeStream(ctx, p)
 		})
@@ -270,7 +268,7 @@ func (s *Subscriber) queryChangeStream(ctx context.Context, p *PartitionMetadata
 
 	stmt := spanner.Statement{
 		SQL: fmt.Sprintf("SELECT ChangeRecord FROM READ_%s (@startTimestamp, @endTimestamp, @partitionToken, @heartbeatMilliseconds)", s.streamName),
-		Params: map[string]interface{}{
+		Params: map[string]any{
 			"startTimestamp":        p.Watermark,
 			"endTimestamp":          p.EndTimestamp,
 			"partitionToken":        p.PartitionToken,
