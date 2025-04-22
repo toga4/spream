@@ -173,7 +173,7 @@ func main() {
 		options = append(options, spream.WithHeartbeatInterval(flags.heartbeatInterval))
 	}
 	if flags.priority != spannerpb.RequestOptions_PRIORITY_UNSPECIFIED {
-		options = append(options, spream.WithSpannerRequestPriotiry(flags.priority))
+		options = append(options, spream.WithSpannerRequestPriority(flags.priority))
 	}
 
 	subscriber := spream.NewSubscriber(spannerClient, flags.streamName, partitionStorage, options...)

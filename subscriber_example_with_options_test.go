@@ -42,7 +42,7 @@ func ExampleNewSubscriber_withOptions() {
 		spream.WithStartTimestamp(time.Now().Add(-time.Hour)),  // Start subscribing from 1 hour ago.
 		spream.WithEndTimestamp(time.Now().Add(5*time.Minute)), // Stop subscribing after 5 minutes.
 		spream.WithHeartbeatInterval(3*time.Second),
-		spream.WithSpannerRequestPriotiry(spannerpb.RequestOptions_PRIORITY_MEDIUM),
+		spream.WithSpannerRequestPriority(spannerpb.RequestOptions_PRIORITY_MEDIUM),
 	)
 
 	logger := &Logger{out: os.Stdout}
