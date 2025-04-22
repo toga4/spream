@@ -91,17 +91,17 @@ func WithHeartbeatInterval(heartbeatInterval time.Duration) Option {
 	return withHeartbeatInterval(heartbeatInterval)
 }
 
-type withSpannerRequestPriotiry spannerpb.RequestOptions_Priority
+type withSpannerRequestPriority spannerpb.RequestOptions_Priority
 
-func (o withSpannerRequestPriotiry) Apply(c *config) {
+func (o withSpannerRequestPriority) Apply(c *config) {
 	c.spannerRequestPriority = spannerpb.RequestOptions_Priority(o)
 }
 
-// WithSpannerRequestPriotiry set the request priority option for read change streams.
+// WithSpannerRequestPriority set the request priority option for read change streams.
 //
 // Default value is unspecified, equivalent to high.
-func WithSpannerRequestPriotiry(priority spannerpb.RequestOptions_Priority) Option {
-	return withSpannerRequestPriotiry(priority)
+func WithSpannerRequestPriority(priority spannerpb.RequestOptions_Priority) Option {
+	return withSpannerRequestPriority(priority)
 }
 
 var (

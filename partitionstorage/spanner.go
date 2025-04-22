@@ -29,17 +29,17 @@ type spannerOption interface {
 	Apply(*spannerConfig)
 }
 
-type withRequestPriotiry spannerpb.RequestOptions_Priority
+type withRequestPriority spannerpb.RequestOptions_Priority
 
-func (o withRequestPriotiry) Apply(c *spannerConfig) {
+func (o withRequestPriority) Apply(c *spannerConfig) {
 	c.requestPriority = spannerpb.RequestOptions_Priority(o)
 }
 
-// WithRequestPriotiry set the priority option for spanner requests.
+// WithRequestPriority set the priority option for spanner requests.
 //
 // Default value is unspecified, equivalent to high.
-func WithRequestPriotiry(priority spannerpb.RequestOptions_Priority) spannerOption {
-	return withRequestPriotiry(priority)
+func WithRequestPriority(priority spannerpb.RequestOptions_Priority) spannerOption {
+	return withRequestPriority(priority)
 }
 
 // NewSpanner creates new instance of SpannerPartitionStorage
