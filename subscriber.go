@@ -174,7 +174,6 @@ func (s *Subscriber) Subscribe(ctx context.Context, consumer Consumer) error {
 		return fmt.Errorf("failed to get interrupted partitions: %w", err)
 	}
 	for _, p := range interruptedPartitions {
-		p := p
 		s.eg.Go(func() error {
 			return s.queryChangeStream(ctx, p)
 		})
@@ -254,7 +253,6 @@ func (s *Subscriber) detectNewPartitions(ctx context.Context) error {
 	}
 
 	for _, p := range partitions {
-		p := p
 		s.eg.Go(func() error {
 			return s.queryChangeStream(ctx, p)
 		})
