@@ -14,7 +14,7 @@ import (
 	"google.golang.org/grpc/codes"
 )
 
-// InmemoryPartitionStorage implements PartitionStorage that stores PartitionMetadata in Cloud Spanner.
+// SpannerPartitionStorage implements PartitionStorage that stores PartitionMetadata in Cloud Spanner.
 type SpannerPartitionStorage struct {
 	client          *spanner.Client
 	tableName       string
