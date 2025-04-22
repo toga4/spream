@@ -2,7 +2,7 @@ package partitionstorage
 
 import (
 	"context"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -40,12 +40,12 @@ func (s *InmemoryPartitionStorage) GetUnfinishedMinWatermarkPartition(ctx contex
 		return nil, nil
 	}
 
-	sort.Slice(partitions, func(i, j int) bool { return partitions[i].Watermark.Before(partitions[j].Watermark) })
+	slices.SortFunc(partitions, func(a, b *spream.PartitionMetadata) int { return a.Watermark.Compare(b.Watermark) })
 	return partitions[0], nil
 }
 
 func (s *InmemoryPartitionStorage) GetInterruptedPartitions(ctx context.Context) ([]*spream.PartitionMetadata, error) {
-	// InmemoryPartitionStorage can't return any partitions
+	// InmemoryPartitionStorage is volatile and can't have interrupted partitions thus always returns nil
 	return nil, nil
 }
 
@@ -62,6 +62,9 @@ func (s *InmemoryPartitionStorage) InitializeRootPartition(ctx context.Context, 
 		State:           spream.StateCreated,
 		Watermark:       startTimestamp,
 		CreatedAt:       time.Now(),
+		ScheduledAt:     nil,
+		RunningAt:       nil,
+		FinishedAt:      nil,
 	}
 	s.m[p.PartitionToken] = p
 
@@ -95,6 +98,10 @@ func (s *InmemoryPartitionStorage) AddChildPartitions(ctx context.Context, endTi
 			HeartbeatMillis: heartbeatMillis,
 			State:           spream.StateCreated,
 			Watermark:       r.StartTimestamp,
+			CreatedAt:       time.Now(),
+			ScheduledAt:     nil,
+			RunningAt:       nil,
+			FinishedAt:      nil,
 		}
 		s.m[p.PartitionToken] = p
 	}

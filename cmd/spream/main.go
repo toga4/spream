@@ -153,6 +153,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+		defer metadataSpannerClient.Close()
 		ps := partitionstorage.NewSpanner(metadataSpannerClient, flags.metadataTableName)
 		if err := ps.CreateTableIfNotExists(ctx); err != nil {
 			fmt.Fprintln(os.Stderr, err)

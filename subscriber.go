@@ -205,7 +205,7 @@ func (s *Subscriber) Subscribe(ctx context.Context, consumer Consumer) error {
 
 // SubscribeFunc is an adapter to allow the use of ordinary functions as Consumer.
 //
-// function might be called from multiple goroutines and must be re-entrant safe.
+// The provided function might be called from multiple goroutines and must be re-entrant safe.
 func (s *Subscriber) SubscribeFunc(ctx context.Context, f ConsumerFunc) error {
 	return s.Subscribe(ctx, f)
 }
