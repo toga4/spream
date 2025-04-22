@@ -270,7 +270,7 @@ func (s *Subscriber) queryChangeStream(ctx context.Context, p *PartitionMetadata
 
 	stmt := spanner.Statement{
 		SQL: fmt.Sprintf("SELECT ChangeRecord FROM READ_%s (@startTimestamp, @endTimestamp, @partitionToken, @heartbeatMilliseconds)", s.streamName),
-		Params: map[string]interface{}{
+		Params: map[string]any{
 			"startTimestamp":        p.Watermark,
 			"endTimestamp":          p.EndTimestamp,
 			"partitionToken":        p.PartitionToken,
