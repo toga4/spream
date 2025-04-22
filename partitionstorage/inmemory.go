@@ -2,7 +2,7 @@ package partitionstorage
 
 import (
 	"context"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -40,7 +40,7 @@ func (s *InmemoryPartitionStorage) GetUnfinishedMinWatermarkPartition(ctx contex
 		return nil, nil
 	}
 
-	sort.Slice(partitions, func(i, j int) bool { return partitions[i].Watermark.Before(partitions[j].Watermark) })
+	slices.SortFunc(partitions, func(a, b *spream.PartitionMetadata) int { return a.Watermark.Compare(b.Watermark) })
 	return partitions[0], nil
 }
 
