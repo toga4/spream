@@ -71,6 +71,9 @@ const (
 	columnScheduledAt     = "ScheduledAt"
 	columnRunningAt       = "RunningAt"
 	columnFinishedAt      = "FinishedAt"
+
+	IndexWatermarkIndex               = "WatermarkIndex"
+	IndexCreatedAtStartTimestampIndex = "CreatedAtStartTimestampIndex"
 )
 
 func (s *SpannerPartitionStorage) CreateTableIfNotExists(ctx context.Context) error {
@@ -107,9 +110,25 @@ func (s *SpannerPartitionStorage) CreateTableIfNotExists(ctx context.Context) er
 		columnFinishedAt,
 	)
 
+	// 	-- For GoogleSQL dialect
+	// CREATE INDEX WatermarkIndex ON <Metadata Table Name> (Watermark) STORING (State);
+	// CREATE INDEX CreatedAtStartTimestampIndex ON <Metadata Table Name> (CreatedAt, StartTimestamp);
+	watermarkIndexStmt := fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %[1]s ON %[2]s(%[3]s) STORING (%[4]s)`,
+		IndexWatermarkIndex,
+		s.tableName,
+		columnWatermark,
+		columnState,
+	)
+	timestampIndexStmt := fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %[1]s ON %[2]s(%[3]s, %[4]s)`,
+		IndexCreatedAtStartTimestampIndex,
+		s.tableName,
+		columnCreatedAt,
+		columnStartTimestamp,
+	)
+
 	req := &databasepb.UpdateDatabaseDdlRequest{
 		Database:   s.client.DatabaseName(),
-		Statements: []string{stmt},
+		Statements: []string{stmt, watermarkIndexStmt, timestampIndexStmt},
 	}
 	op, err := databaseAdminClient.UpdateDatabaseDdl(ctx, req)
 	if err != nil {
