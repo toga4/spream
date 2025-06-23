@@ -9,7 +9,7 @@ require (
 	github.com/google/go-cmp v0.7.0
 	github.com/testcontainers/testcontainers-go v0.37.0
 	golang.org/x/sync v0.15.0
-	google.golang.org/api v0.237.0
+	google.golang.org/api v0.238.0
 	google.golang.org/grpc v1.73.0
 )
 
