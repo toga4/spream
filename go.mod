@@ -1,6 +1,6 @@
 module github.com/toga4/spream
 
-go 1.23.0
+go 1.24.0
 
 toolchain go1.24.1
 
@@ -8,7 +8,7 @@ require (
 	cloud.google.com/go/spanner v1.85.0
 	github.com/google/go-cmp v0.7.0
 	github.com/testcontainers/testcontainers-go v0.38.0
-	golang.org/x/sync v0.16.0
+	golang.org/x/sync v0.17.0
 	google.golang.org/api v0.248.0
 	google.golang.org/grpc v1.75.0
 )
