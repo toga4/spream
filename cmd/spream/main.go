@@ -121,7 +121,7 @@ type jsonOutputConsumer struct {
 	mu  sync.Mutex
 }
 
-func (l *jsonOutputConsumer) Consume(change *spream.DataChangeRecord) error {
+func (l *jsonOutputConsumer) Consume(_ context.Context, change *spream.DataChangeRecord) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return json.NewEncoder(l.out).Encode(change)

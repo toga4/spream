@@ -56,7 +56,7 @@ type Logger struct {
 	mu  sync.Mutex
 }
 
-func (l *Logger) Consume(change *spream.DataChangeRecord) error {
+func (l *Logger) Consume(_ context.Context, change *spream.DataChangeRecord) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return json.NewEncoder(l.out).Encode(change)

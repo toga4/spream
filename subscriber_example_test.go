@@ -31,7 +31,7 @@ func ExampleNewSubscriber() {
 	fmt.Fprintf(os.Stderr, "Reading the stream...\n")
 
 	var mu sync.Mutex
-	if err := subscriber.SubscribeFunc(ctx, func(change *spream.DataChangeRecord) error {
+	if err := subscriber.SubscribeFunc(ctx, func(_ context.Context, change *spream.DataChangeRecord) error {
 		mu.Lock()
 		defer mu.Unlock()
 		return json.NewEncoder(os.Stdout).Encode(change)

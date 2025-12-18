@@ -196,7 +196,7 @@ type consumer struct {
 	changes []*spream.DataChangeRecord
 }
 
-func (c *consumer) Consume(change *spream.DataChangeRecord) error {
+func (c *consumer) Consume(_ context.Context, change *spream.DataChangeRecord) error {
 	c.changes = append(c.changes, change)
 	return nil
 }
