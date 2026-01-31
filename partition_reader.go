@@ -10,22 +10,6 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// partitionEvent represents an event from a partition reader.
-type partitionEvent struct {
-	eventType       partitionEventType
-	partition       *PartitionMetadata
-	childPartitions *ChildPartitionsRecord
-	err             error
-}
-
-type partitionEventType int
-
-const (
-	eventChildPartitions partitionEventType = iota
-	eventPartitionFinished
-	eventPartitionError
-)
-
 // partitionReader reads a single partition of the change stream.
 type partitionReader struct {
 	partition        *PartitionMetadata
@@ -36,9 +20,6 @@ type partitionReader struct {
 	config           *config
 
 	tracker *inflightTracker
-
-	// Event notification.
-	events chan<- partitionEvent
 }
 
 func newPartitionReader(
@@ -48,7 +29,6 @@ func newPartitionReader(
 	partitionStorage PartitionStorage,
 	consumer Consumer,
 	cfg *config,
-	events chan<- partitionEvent,
 ) *partitionReader {
 	return &partitionReader{
 		partition:        partition,
@@ -58,7 +38,6 @@ func newPartitionReader(
 		consumer:         consumer,
 		config:           cfg,
 		tracker:          newInflightTracker(cfg.maxInflight),
-		events:           events,
 	}
 }
 
@@ -254,7 +233,7 @@ func (r *partitionReader) processHeartbeatRecord(_ context.Context, record *Hear
 
 func (r *partitionReader) processChildPartitionsRecord(ctx context.Context, record *ChildPartitionsRecord) error {
 	// ChildPartitionsRecord also doesn't spawn goroutine, so no semaphore needed.
-	// Important: Process in order of persist -> notify -> ack.
+	// Important: Process in order of persist -> ack.
 	// If ack comes first and persist fails, recovery is impossible.
 
 	// 1. Persist child partitions.
@@ -267,14 +246,7 @@ func (r *partitionReader) processChildPartitionsRecord(ctx context.Context, reco
 		return fmt.Errorf("add child partitions: %w", err)
 	}
 
-	// 2. Notify coordinator.
-	r.events <- partitionEvent{
-		eventType:       eventChildPartitions,
-		partition:       r.partition,
-		childPartitions: record,
-	}
-
-	// 3. Ack last.
+	// 2. Ack.
 	r.tracker.ackImmediate(record.StartTimestamp)
 
 	return nil

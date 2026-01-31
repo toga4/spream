@@ -23,9 +23,6 @@ type coordinator struct {
 	mu      sync.RWMutex
 	readers map[string]*partitionReader
 
-	// Events.
-	events chan partitionEvent
-
 	// Control.
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -50,7 +47,6 @@ func newCoordinator(
 		consumer:         consumer,
 		config:           cfg,
 		readers:          make(map[string]*partitionReader),
-		events:           make(chan partitionEvent, 100),
 	}
 }
 
@@ -72,11 +68,7 @@ func (c *coordinator) run(ctx context.Context) error {
 	c.wg.Add(1)
 	go c.detectNewPartitionsLoop()
 
-	// 4. Event processing loop.
-	c.wg.Add(1)
-	go c.handleEvents()
-
-	// 5. Wait for completion.
+	// 4. Wait for completion.
 	c.wg.Wait()
 
 	if c.err != nil {
@@ -189,52 +181,18 @@ func (c *coordinator) startPartitionReader(partition *PartitionMetadata) {
 		c.partitionStorage,
 		c.consumer,
 		c.config,
-		c.events,
 	)
 	c.readers[partition.PartitionToken] = reader
 
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
-		if err := reader.run(c.ctx); err != nil {
-			c.events <- partitionEvent{
-				eventType: eventPartitionError,
-				partition: partition,
-				err:       err,
-			}
-		} else {
-			c.events <- partitionEvent{
-				eventType: eventPartitionFinished,
-				partition: partition,
-			}
+		err := reader.run(c.ctx)
+		c.removeReader(partition.PartitionToken)
+		if err != nil {
+			c.recordError(err)
 		}
 	}()
-}
-
-func (c *coordinator) handleEvents() {
-	defer c.wg.Done()
-
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		case event := <-c.events:
-			c.processEvent(event)
-		}
-	}
-}
-
-func (c *coordinator) processEvent(event partitionEvent) {
-	switch event.eventType {
-	case eventChildPartitions:
-		// Child partitions have been added to storage, nothing else to do here.
-		// The next tick of detectNewPartitionsLoop will pick them up.
-	case eventPartitionFinished:
-		c.removeReader(event.partition.PartitionToken)
-	case eventPartitionError:
-		c.removeReader(event.partition.PartitionToken)
-		c.recordError(event.err)
-	}
 }
 
 func (c *coordinator) removeReader(partitionToken string) {
