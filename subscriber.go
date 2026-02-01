@@ -2,6 +2,7 @@ package spream
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"cloud.google.com/go/spanner"
@@ -13,6 +14,8 @@ type Subscriber struct {
 	streamName       string
 	partitionStorage PartitionStorage
 	config           *config
+
+	coordinator atomic.Pointer[coordinator]
 }
 
 // PartitionStorage is an interface for storing and reading PartitionMetadata.
@@ -44,8 +47,8 @@ func NewSubscriber(
 }
 
 // Subscribe starts subscribing to the change stream.
-// Blocks until ctx is canceled or end timestamp is reached.
-func (s *Subscriber) Subscribe(ctx context.Context, consumer Consumer) error {
+// It blocks until Shutdown or Close is called, or endTimestamp is reached.
+func (s *Subscriber) Subscribe(consumer Consumer) error {
 	c := newCoordinator(
 		s.spannerClient,
 		s.streamName,
@@ -53,10 +56,34 @@ func (s *Subscriber) Subscribe(ctx context.Context, consumer Consumer) error {
 		consumer,
 		s.config,
 	)
-	return c.run(ctx)
+
+	s.coordinator.Store(c)
+	defer s.coordinator.Store(nil)
+
+	return c.run()
 }
 
 // SubscribeFunc starts subscribing with a function as Consumer.
-func (s *Subscriber) SubscribeFunc(ctx context.Context, f ConsumerFunc) error {
-	return s.Subscribe(ctx, f)
+func (s *Subscriber) SubscribeFunc(f ConsumerFunc) error {
+	return s.Subscribe(f)
+}
+
+// Shutdown gracefully shuts down the subscriber.
+// It stops accepting new partitions and waits for in-flight records to complete.
+func (s *Subscriber) Shutdown(ctx context.Context) error {
+	c := s.coordinator.Load()
+	if c == nil {
+		return nil
+	}
+	return c.shutdown(ctx)
+}
+
+// Close immediately closes the subscriber.
+// It does not wait for in-flight records to complete.
+func (s *Subscriber) Close() error {
+	c := s.coordinator.Load()
+	if c == nil {
+		return nil
+	}
+	return c.close()
 }

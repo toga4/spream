@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"cloud.google.com/go/spanner"
 	"golang.org/x/sync/errgroup"
@@ -71,30 +70,34 @@ func (r *partitionReader) run(ctx context.Context) error {
 
 	// Wait for all goroutines to complete.
 	if err := g.Wait(); err != nil {
-		// Only context.Canceled is treated as normal termination.
-		// DeadlineExceeded is treated as error since source cannot be distinguished.
 		if errors.Is(err, context.Canceled) {
-			return nil
+			cause := context.Cause(ctx)
+			if cause == nil {
+				// Graceful shutdown (Shutdown) → drain in-flight records.
+				r.drainInflight()
+			}
+			// Forced termination (Close, recordError) → skip drain.
+			return err
 		}
 		return err
 	}
 
-	// initiateShutdown only on normal termination.
-	r.tracker.initiateShutdown()
+	// Normal termination (endTimestamp reached).
+	r.drainInflight()
 
-	// Wait for all in-flight to complete.
-	waitCtx, waitCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer waitCancel()
-	if err := r.tracker.waitAllCompleted(waitCtx); err != nil {
-		// Continue even on timeout, just log.
-	}
-
-	// Update state to FINISHED.
-	if err := r.partitionStorage.UpdateToFinished(ctx, r.partition.PartitionToken); err != nil {
+	// UpdateToFinished uses background context since ctx is already done.
+	if err := r.partitionStorage.UpdateToFinished(context.Background(), r.partition.PartitionToken); err != nil {
 		return fmt.Errorf("update to finished: %w", err)
 	}
 
 	return nil
+}
+
+// drainInflight waits for all in-flight records to complete.
+// No timeout is applied here. If Shutdown times out, the caller should call Close.
+func (r *partitionReader) drainInflight() {
+	r.tracker.initiateShutdown()
+	r.tracker.waitAllCompleted(context.Background())
 }
 
 // processWatermarks processes watermark updates.

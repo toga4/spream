@@ -25,8 +25,11 @@ type coordinator struct {
 
 	// Control.
 	ctx    context.Context
-	cancel context.CancelFunc
+	cancel context.CancelCauseFunc
 	wg     sync.WaitGroup
+
+	// Completion notification.
+	done chan struct{}
 
 	// Error.
 	err     error
@@ -47,12 +50,15 @@ func newCoordinator(
 		consumer:         consumer,
 		config:           cfg,
 		readers:          make(map[string]*partitionReader),
+		done:             make(chan struct{}),
 	}
 }
 
-func (c *coordinator) run(ctx context.Context) error {
-	c.ctx, c.cancel = context.WithCancel(ctx)
-	defer c.cancel()
+func (c *coordinator) run() error {
+	defer close(c.done)
+
+	c.ctx, c.cancel = context.WithCancelCause(context.Background())
+	defer c.cancel(nil)
 
 	// 1. Initialize.
 	if err := c.initialize(); err != nil {
@@ -75,7 +81,12 @@ func (c *coordinator) run(ctx context.Context) error {
 		return c.err
 	}
 
-	return c.ctx.Err()
+	// Shutdown/Close による終了の場合
+	if c.ctx.Err() != nil {
+		return ErrSubscriberClosed
+	}
+
+	return nil
 }
 
 func (c *coordinator) initialize() error {
@@ -190,6 +201,9 @@ func (c *coordinator) startPartitionReader(partition *PartitionMetadata) {
 		err := reader.run(c.ctx)
 		c.removeReader(partition.PartitionToken)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return // Shutdown or Close.
+			}
 			c.recordError(err)
 		}
 	}()
@@ -204,10 +218,32 @@ func (c *coordinator) removeReader(partitionToken string) {
 func (c *coordinator) recordError(err error) {
 	c.errOnce.Do(func() {
 		c.err = err
-		c.cancel()
+		c.cancel(err)
 	})
 }
 
 func (c *coordinator) initiateShutdown() {
-	c.cancel()
+	c.cancel(nil)
+}
+
+// shutdown gracefully shuts down the coordinator.
+// It stops accepting new partitions and waits for in-flight records to complete.
+func (c *coordinator) shutdown(ctx context.Context) error {
+	c.cancel(nil)
+
+	select {
+	case <-c.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// close immediately closes the coordinator.
+// It does not wait for in-flight records to complete.
+func (c *coordinator) close() error {
+	c.cancel(ErrSubscriberClosed)
+
+	<-c.done
+	return nil
 }

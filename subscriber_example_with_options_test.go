@@ -45,8 +45,22 @@ func ExampleNewSubscriber_withOptions() {
 		spream.WithSpannerRequestPriority(spannerpb.RequestOptions_PRIORITY_MEDIUM),
 	)
 
+	// Start subscribing in a separate goroutine.
+	done := make(chan error)
 	logger := &Logger{out: os.Stdout}
-	if err := subscriber.Subscribe(ctx, logger); err != nil && !errors.Is(ctx.Err(), context.Canceled) {
+	go func() {
+		done <- subscriber.Subscribe(logger)
+	}()
+
+	// Wait for signal and gracefully shutdown.
+	<-ctx.Done()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := subscriber.Shutdown(shutdownCtx); err != nil {
+		subscriber.Close()
+	}
+
+	if err := <-done; err != nil && !errors.Is(err, spream.ErrSubscriberClosed) {
 		panic(err)
 	}
 }

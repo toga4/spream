@@ -407,13 +407,11 @@ func TestSubscriber(t *testing.T) {
 
 			subscriber := spream.NewSubscriber(spannerClient, streamName, partitionStorage)
 
-			ctx, cancel := context.WithCancel(ctx)
-			defer cancel()
-
 			consumer := &consumer{}
 			go func() {
-				_ = subscriber.Subscribe(ctx, consumer)
+				_ = subscriber.Subscribe(consumer)
 			}()
+			defer subscriber.Close()
 			t.Log("Subscribe started.")
 
 			t.Log("Executing DML statements...")
@@ -431,7 +429,6 @@ func TestSubscriber(t *testing.T) {
 
 			t.Log("Waiting subscription...")
 			time.Sleep(5 * time.Second)
-			cancel()
 
 			opt := cmpopts.IgnoreFields(spream.DataChangeRecord{}, "CommitTimestamp", "ServerTransactionID")
 			if diff := cmp.Diff(test.expected, consumer.changes, opt); diff != "" {

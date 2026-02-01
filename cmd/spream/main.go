@@ -180,7 +180,22 @@ func main() {
 	consumer := &jsonOutputConsumer{out: os.Stdout}
 
 	fmt.Fprintln(os.Stderr, "Waiting changes...")
-	if err := subscriber.Subscribe(ctx, consumer); err != nil && !errors.Is(ctx.Err(), context.Canceled) {
+
+	// Start subscribing in a separate goroutine.
+	done := make(chan error)
+	go func() {
+		done <- subscriber.Subscribe(consumer)
+	}()
+
+	// Wait for signal and gracefully shutdown.
+	<-ctx.Done()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := subscriber.Shutdown(shutdownCtx); err != nil {
+		subscriber.Close()
+	}
+
+	if err := <-done; err != nil && !errors.Is(err, spream.ErrSubscriberClosed) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
