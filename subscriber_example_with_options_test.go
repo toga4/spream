@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"cloud.google.com/go/spanner"
-	"cloud.google.com/go/spanner/apiv1/spannerpb"
 	"github.com/toga4/spream"
 	"github.com/toga4/spream/partitionstorage"
 )
@@ -42,7 +41,6 @@ func ExampleNewSubscriber_withOptions() {
 		spream.WithStartTimestamp(time.Now().Add(-time.Hour)),  // Start subscribing from 1 hour ago.
 		spream.WithEndTimestamp(time.Now().Add(5*time.Minute)), // Stop subscribing after 5 minutes.
 		spream.WithHeartbeatInterval(3*time.Second),
-		spream.WithSpannerRequestPriority(spannerpb.RequestOptions_PRIORITY_MEDIUM),
 	)
 
 	// Start subscribing in a separate goroutine.

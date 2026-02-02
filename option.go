@@ -1,20 +1,14 @@
 package spream
 
-import (
-	"time"
-
-	"cloud.google.com/go/spanner/apiv1/spannerpb"
-)
+import "time"
 
 // config holds the configuration for the Subscriber.
 type config struct {
 	startTimestamp             time.Time
 	endTimestamp               time.Time
 	heartbeatInterval          time.Duration
-	spannerRequestPriority     spannerpb.RequestOptions_Priority
 	maxInflight                int
 	partitionDiscoveryInterval time.Duration
-	errorHandler               ErrorHandler
 }
 
 // Option is an interface for configuring the Subscriber.
@@ -63,19 +57,6 @@ func WithHeartbeatInterval(heartbeatInterval time.Duration) Option {
 	return withHeartbeatInterval(heartbeatInterval)
 }
 
-type withSpannerRequestPriority spannerpb.RequestOptions_Priority
-
-func (o withSpannerRequestPriority) Apply(c *config) {
-	c.spannerRequestPriority = spannerpb.RequestOptions_Priority(o)
-}
-
-// WithSpannerRequestPriority sets the request priority option for reading change streams.
-//
-// Default value is unspecified, equivalent to high.
-func WithSpannerRequestPriority(priority spannerpb.RequestOptions_Priority) Option {
-	return withSpannerRequestPriority(priority)
-}
-
 type withMaxInflight int
 
 func (o withMaxInflight) Apply(c *config) {
@@ -100,21 +81,6 @@ func (o withPartitionDiscoveryInterval) Apply(c *config) {
 // Default value is 1 second.
 func WithPartitionDiscoveryInterval(d time.Duration) Option {
 	return withPartitionDiscoveryInterval(d)
-}
-
-type withErrorHandler struct {
-	handler ErrorHandler
-}
-
-func (o withErrorHandler) Apply(c *config) {
-	c.errorHandler = o.handler
-}
-
-// WithErrorHandler sets the error handler for processing errors.
-//
-// If not set, any error from Consumer will stop the entire subscription.
-func WithErrorHandler(handler ErrorHandler) Option {
-	return withErrorHandler{handler: handler}
 }
 
 var (

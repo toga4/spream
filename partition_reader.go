@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"cloud.google.com/go/spanner"
 	"golang.org/x/sync/errgroup"
@@ -11,12 +12,17 @@ import (
 
 // partitionReader reads a single partition of the change stream.
 type partitionReader struct {
-	partition        *PartitionMetadata
+	// Partition information (extracted from PartitionMetadata at creation time).
+	partitionToken  string
+	startWatermark  time.Time // Query start position (initial value).
+	endTimestamp    time.Time
+	heartbeatMillis int64
+
+	// Dependencies.
 	spannerClient    *spanner.Client
 	streamName       string
 	partitionStorage PartitionStorage
 	consumer         Consumer
-	config           *config
 
 	tracker *inflightTracker
 }
@@ -27,26 +33,26 @@ func newPartitionReader(
 	streamName string,
 	partitionStorage PartitionStorage,
 	consumer Consumer,
-	cfg *config,
+	maxInflight int,
 ) *partitionReader {
 	return &partitionReader{
-		partition:        partition,
+		partitionToken:   partition.PartitionToken,
+		startWatermark:   partition.Watermark,
+		endTimestamp:     partition.EndTimestamp,
+		heartbeatMillis:  partition.HeartbeatMillis,
 		spannerClient:    spannerClient,
 		streamName:       streamName,
 		partitionStorage: partitionStorage,
 		consumer:         consumer,
-		config:           cfg,
-		tracker:          newInflightTracker(cfg.maxInflight),
+		tracker:          newInflightTracker(maxInflight),
 	}
 }
 
 func (r *partitionReader) run(ctx context.Context) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	defer r.tracker.close()
 
 	// Update state to RUNNING.
-	if err := r.partitionStorage.UpdateToRunning(ctx, r.partition.PartitionToken); err != nil {
+	if err := r.partitionStorage.UpdateToRunning(ctx, r.partitionToken); err != nil {
 		return fmt.Errorf("update to running: %w", err)
 	}
 
@@ -70,14 +76,8 @@ func (r *partitionReader) run(ctx context.Context) error {
 
 	// Wait for all goroutines to complete.
 	if err := g.Wait(); err != nil {
-		if errors.Is(err, context.Canceled) {
-			cause := context.Cause(ctx)
-			if cause == nil {
-				// Graceful shutdown (Shutdown) → drain in-flight records.
-				r.drainInflight()
-			}
-			// Forced termination (Close, recordError) → skip drain.
-			return err
+		if errors.Is(context.Cause(ctx), errGracefulShutdown) {
+			r.drainInflight()
 		}
 		return err
 	}
@@ -86,7 +86,7 @@ func (r *partitionReader) run(ctx context.Context) error {
 	r.drainInflight()
 
 	// UpdateToFinished uses background context since ctx is already done.
-	if err := r.partitionStorage.UpdateToFinished(context.Background(), r.partition.PartitionToken); err != nil {
+	if err := r.partitionStorage.UpdateToFinished(context.Background(), r.partitionToken); err != nil {
 		return fmt.Errorf("update to finished: %w", err)
 	}
 
@@ -96,8 +96,12 @@ func (r *partitionReader) run(ctx context.Context) error {
 // drainInflight waits for all in-flight records to complete.
 // No timeout is applied here. If Shutdown times out, the caller should call Close.
 func (r *partitionReader) drainInflight() {
-	r.tracker.initiateShutdown()
-	r.tracker.waitAllCompleted(context.Background())
+	r.tracker.drain()
+}
+
+// Close forcefully closes the partition reader, interrupting any drainInflight.
+func (r *partitionReader) Close() {
+	r.tracker.close()
 }
 
 // processWatermarks processes watermark updates.
@@ -110,8 +114,7 @@ func (r *partitionReader) processWatermarks(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
-			if err := r.partitionStorage.UpdateWatermark(
-				ctx, r.partition.PartitionToken, watermark,
+			if err := r.partitionStorage.UpdateWatermark(ctx, r.partitionToken, watermark,
 			); err != nil {
 				return fmt.Errorf("update watermark: %w", err)
 			}
@@ -119,7 +122,8 @@ func (r *partitionReader) processWatermarks(ctx context.Context) error {
 	}
 }
 
-// processErrors processes errors.
+// processErrors processes errors from Consumer.
+// Any Consumer error stops the subscription immediately.
 func (r *partitionReader) processErrors(ctx context.Context) error {
 	for {
 		select {
@@ -129,31 +133,14 @@ func (r *partitionReader) processErrors(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
-			if r.config.errorHandler == nil {
-				return err
-			}
-			shouldContinue, retryDelay := r.config.errorHandler.HandleError(
-				ctx, r.partition, nil, err,
-			)
-			if !shouldContinue && retryDelay == 0 {
-				return err
-			}
-			if retryDelay > 0 {
-				// TODO: Implement retry logic.
-				_ = retryDelay
-			}
+			return err
 		}
 	}
 }
 
 func (r *partitionReader) readStream(ctx context.Context) error {
-	stmt := r.buildStatement()
-	iter := r.spannerClient.Single().QueryWithOptions(ctx, stmt, spanner.QueryOptions{
-		Priority: r.config.spannerRequestPriority,
-	})
-
-	return iter.Do(func(row *spanner.Row) error {
-		records := []*changeRecord{}
+	return r.spannerClient.Single().Query(ctx, r.buildStatement()).Do(func(row *spanner.Row) error {
+		var records []*changeRecord
 		if err := row.Columns(&records); err != nil {
 			return err
 		}
@@ -165,16 +152,15 @@ func (r *partitionReader) buildStatement() spanner.Statement {
 	stmt := spanner.Statement{
 		SQL: fmt.Sprintf("SELECT ChangeRecord FROM READ_%s (@startTimestamp, @endTimestamp, @partitionToken, @heartbeatMilliseconds)", r.streamName),
 		Params: map[string]any{
-			"startTimestamp":        r.partition.Watermark,
-			"endTimestamp":          r.partition.EndTimestamp,
-			"partitionToken":        r.partition.PartitionToken,
-			"heartbeatMilliseconds": r.partition.HeartbeatMillis,
+			"startTimestamp":        r.startWatermark,
+			"endTimestamp":          r.endTimestamp,
+			"partitionToken":        r.partitionToken,
+			"heartbeatMilliseconds": r.heartbeatMillis,
 		},
 	}
 
-	if r.partition.IsRootPartition() {
-		// Must be converted to NULL (root partition).
-		stmt.Params["partitionToken"] = nil
+	if r.partitionToken == RootPartitionToken {
+		stmt.Params["partitionToken"] = nil // Root partition requires NULL.
 	}
 
 	return stmt
@@ -192,9 +178,7 @@ func (r *partitionReader) processRecords(ctx context.Context, records []*changeR
 		// HeartbeatRecord processing.
 		// Allocate sequence and complete immediately to include in continuous ack chain.
 		for _, record := range cr.HeartbeatRecords {
-			if err := r.processHeartbeatRecord(ctx, record); err != nil {
-				return err
-			}
+			r.processHeartbeatRecord(record)
 		}
 
 		// ChildPartitionsRecord processing.
@@ -226,12 +210,11 @@ func (r *partitionReader) processDataChangeRecord(ctx context.Context, record *d
 	return nil
 }
 
-func (r *partitionReader) processHeartbeatRecord(_ context.Context, record *HeartbeatRecord) error {
+func (r *partitionReader) processHeartbeatRecord(record *HeartbeatRecord) {
 	// HeartbeatRecord doesn't call Consumer, so no goroutine is spawned.
 	// Semaphore (acquire) is not needed. ackImmediate for immediate ack.
 	// This advances watermark even when no DataChangeRecord arrives.
 	r.tracker.ackImmediate(record.Timestamp)
-	return nil
 }
 
 func (r *partitionReader) processChildPartitionsRecord(ctx context.Context, record *ChildPartitionsRecord) error {
@@ -242,8 +225,8 @@ func (r *partitionReader) processChildPartitionsRecord(ctx context.Context, reco
 	// 1. Persist child partitions.
 	if err := r.partitionStorage.AddChildPartitions(
 		ctx,
-		r.partition.EndTimestamp,
-		r.partition.HeartbeatMillis,
+		r.endTimestamp,
+		r.heartbeatMillis,
 		record,
 	); err != nil {
 		return fmt.Errorf("add child partitions: %w", err)

@@ -173,19 +173,19 @@ func (t *inflightTracker) advanceWatermark() time.Time {
 	return watermark
 }
 
-// initiateShutdown starts graceful shutdown.
+// drain initiates graceful shutdown and waits until all in-flight records are completed.
 // Call after readStream() has finished.
-// After this, done is closed when pending becomes 0.
-func (t *inflightTracker) initiateShutdown() {
+func (t *inflightTracker) drain() {
 	t.shutdown.Store(true)
 
 	// Close done immediately if pending is already 0.
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	if len(t.pending) == 0 {
 		t.closeDone()
 	}
+	t.mu.Unlock()
+
+	<-t.done
 }
 
 // getSafeWatermark returns the continuously acked watermark.
@@ -196,22 +196,13 @@ func (t *inflightTracker) getSafeWatermark() time.Time {
 	return t.safeWatermark
 }
 
-// waitAllCompleted waits until all in-flight records are completed.
-func (t *inflightTracker) waitAllCompleted(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.done:
-		return nil
-	}
-}
-
 // close closes the tracker.
+// This method is idempotent; calling it multiple times is safe.
 func (t *inflightTracker) close() {
-	t.closed.Store(true)
+	if t.closed.Swap(true) {
+		return // Already closed.
+	}
 	close(t.watermarks)
 	close(t.errors)
-
-	// Close done if not already closed.
 	t.closeDone()
 }

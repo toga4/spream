@@ -94,14 +94,14 @@ func (s *Subscriber) Close() error                           // 強制終了
 
 | 呼び出し元 | cause | drain |
 |-----------|-------|-------|
-| `initiateShutdown()` | `nil` | ✓ |
-| `shutdown()` | `nil` | ✓ |
+| `initiateShutdown()` | `errGracefulShutdown` | ✓ |
+| `shutdown()` | `errGracefulShutdown` | ✓ |
 | `close()` | `ErrSubscriberClosed` | ✗ |
 | `recordError(err)` | `err` | ✗ |
 
 partition_reader は `context.Cause(ctx)` で判断:
-- `cause == nil` → graceful shutdown → drain する
-- `cause != nil` → 強制終了 → drain しない
+- `cause == errGracefulShutdown` → graceful shutdown → drain する
+- それ以外 → 強制終了 → drain しない
 
 ## 理由
 

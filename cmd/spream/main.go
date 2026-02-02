@@ -137,7 +137,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
 	defer stop()
 
-	spannerClient, err := spanner.NewClient(ctx, flags.database)
+	spannerClient, err := spanner.NewClientWithConfig(ctx, flags.database, spanner.ClientConfig{
+		QueryOptions: spanner.QueryOptions{
+			Priority: flags.priority,
+		},
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -171,9 +175,6 @@ func main() {
 	}
 	if flags.heartbeatInterval != 0 {
 		options = append(options, spream.WithHeartbeatInterval(flags.heartbeatInterval))
-	}
-	if flags.priority != spannerpb.RequestOptions_PRIORITY_UNSPECIFIED {
-		options = append(options, spream.WithSpannerRequestPriority(flags.priority))
 	}
 
 	subscriber := spream.NewSubscriber(spannerClient, flags.streamName, partitionStorage, options...)

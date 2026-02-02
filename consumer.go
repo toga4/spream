@@ -9,7 +9,7 @@ import "context"
 //
 // Return values:
 //   - nil: Processing succeeded. spream will ack this record and advance the watermark.
-//   - error: Processing failed. Retry or stop based on ErrorHandler settings.
+//   - error: Processing failed. spream will stop subscription.
 //
 // When ctx is canceled, Consume should return ctx.Err() promptly.
 type Consumer interface {

@@ -196,7 +196,7 @@ func (c *coordinator) startPartitionReader(partition *PartitionMetadata) {
 		c.streamName,
 		c.partitionStorage,
 		c.consumer,
-		c.config,
+		c.config.maxInflight,
 	)
 	c.readers[partition.PartitionToken] = reader
 
@@ -249,6 +249,13 @@ func (c *coordinator) shutdown(ctx context.Context) error {
 // It does not wait for in-flight records to complete.
 func (c *coordinator) close() error {
 	c.cancel(ErrSubscriberClosed)
+
+	// Force close all readers to break out of drainInflight.
+	c.mu.RLock()
+	for _, reader := range c.readers {
+		reader.Close()
+	}
+	c.mu.RUnlock()
 
 	<-c.done
 	return nil

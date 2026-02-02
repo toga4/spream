@@ -171,23 +171,28 @@ func TestInflightTracker_GracefulShutdown(t *testing.T) {
 	tracker.acquire(ctx)
 	seq1 := tracker.add(time.Now().Add(time.Second))
 
-	// Initiate shutdown.
-	tracker.initiateShutdown()
+	// Complete records in background after a short delay.
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		tracker.complete(seq0, nil)
+		<-tracker.watermarks
 
-	// Complete records.
-	tracker.complete(seq0, nil)
-	<-tracker.watermarks
+		tracker.complete(seq1, nil)
+		<-tracker.watermarks
+	}()
 
-	tracker.complete(seq1, nil)
-	<-tracker.watermarks
+	// drain() should block until all records are completed.
+	done := make(chan struct{})
+	go func() {
+		tracker.drain()
+		close(done)
+	}()
 
-	// Wait for all to complete.
-	waitCtx, waitCancel := context.WithTimeout(ctx, time.Second)
-	defer waitCancel()
-
-	err := tracker.waitAllCompleted(waitCtx)
-	if err != nil {
-		t.Fatalf("waitAllCompleted failed: %v", err)
+	select {
+	case <-done:
+		// drain() completed successfully.
+	case <-time.After(time.Second):
+		t.Fatal("drain() timed out")
 	}
 
 	tracker.close()
@@ -227,15 +232,8 @@ func TestInflightTracker_ConcurrentAccess(t *testing.T) {
 
 	wg.Wait()
 
-	// Drain watermarks.
-	tracker.initiateShutdown()
-
-	waitCtx, waitCancel := context.WithTimeout(ctx, 5*time.Second)
-	defer waitCancel()
-
-	if err := tracker.waitAllCompleted(waitCtx); err != nil {
-		t.Fatalf("waitAllCompleted failed: %v", err)
-	}
+	// Drain all pending records.
+	tracker.drain()
 
 	tracker.close()
 }
