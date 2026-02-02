@@ -31,7 +31,11 @@ type coordinator struct {
 	// Completion notification.
 	done chan struct{}
 
-	// Error.
+	// Error handling.
+	// spream has two error propagation paths: the err field and context.Cause.
+	// cancel(err) sets the cause only on the first call.
+	// If shutdown() calls cancel() first, subsequent errors won't be reflected
+	// in the cause. Therefore, we record errors separately via err + errOnce.
 	err     error
 	errOnce sync.Once
 }
@@ -81,11 +85,12 @@ func (c *coordinator) run() error {
 		return c.err
 	}
 
-	// Shutdown/Close による終了の場合
-	if c.ctx.Err() != nil {
-		return ErrSubscriberClosed
+	// Determine exit reason from the cancel cause:
+	// - initiateShutdown / shutdown: cancel(errGracefulShutdown) → return nil
+	// - close: cancel(ErrSubscriberClosed) → return ErrSubscriberClosed
+	if cause := context.Cause(c.ctx); cause != nil && cause != errGracefulShutdown {
+		return cause
 	}
-
 	return nil
 }
 
@@ -93,7 +98,7 @@ func (c *coordinator) initialize() error {
 	// Initialize root partition if this is the first run or if the previous run has already been completed.
 	minWatermarkPartition, err := c.partitionStorage.GetUnfinishedMinWatermarkPartition(c.ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get unfinished min watermark partition on start subscribe: %w", err)
+		return fmt.Errorf("get unfinished min watermark partition: %w", err)
 	}
 	if minWatermarkPartition == nil {
 		if err := c.partitionStorage.InitializeRootPartition(
@@ -223,18 +228,19 @@ func (c *coordinator) recordError(err error) {
 }
 
 func (c *coordinator) initiateShutdown() {
-	c.cancel(nil)
+	c.cancel(errGracefulShutdown)
 }
 
 // shutdown gracefully shuts down the coordinator.
 // It stops accepting new partitions and waits for in-flight records to complete.
 func (c *coordinator) shutdown(ctx context.Context) error {
-	c.cancel(nil)
+	c.cancel(errGracefulShutdown)
 
 	select {
 	case <-c.done:
 		return nil
 	case <-ctx.Done():
+		c.recordError(ErrShutdownAborted)
 		return ctx.Err()
 	}
 }
