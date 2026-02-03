@@ -80,20 +80,28 @@ func (c *coordinator) run() error {
 	}
 
 	// 3. Main loop: partition detection and shutdown handling.
+	c.runMainLoop()
+
+	return c.exitError()
+}
+
+// runMainLoop runs the main partition detection loop.
+// It returns when shutdown is requested, context is canceled,
+// all readers finish, or an error occurs.
+func (c *coordinator) runMainLoop() {
 	ticker := time.NewTicker(c.config.partitionDiscoveryInterval)
 	defer ticker.Stop()
 
-loop:
 	for {
 		select {
 		case <-c.shutdownCh:
-			break loop
+			return
 
 		case <-c.ctx.Done():
-			break loop
+			return
 
 		case <-c.readerWg.WaitDone():
-			break loop
+			return
 
 		case <-ticker.C:
 			if err := c.detectAndSchedulePartitions(); err != nil {
@@ -103,12 +111,10 @@ loop:
 					continue
 				}
 				c.recordError(err)
-				break loop
+				return
 			}
 		}
 	}
-
-	return c.exitError()
 }
 
 // exitError determines the return value based on shutdown/close state and errors.
