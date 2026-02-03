@@ -97,10 +97,10 @@ func newTestSubscriber(storage PartitionStorage, partitionDiscoveryInterval time
 		heartbeatInterval:          defaultHeartbeatInterval,
 		maxInflight:                defaultMaxInflight,
 		partitionDiscoveryInterval: partitionDiscoveryInterval,
-		readers:                    make(map[string]*partitionReader),
-		ctx:                        ctx,
-		cancel:                     cancel,
-		readerWg:                   newAsyncWaitGroup(),
+		readers: make(map[string]*partitionReader),
+		ctx:     ctx,
+		cancel:  cancel,
+		done:    make(chan struct{}),
 	}
 }
 
@@ -194,16 +194,18 @@ func TestSubscriber_Shutdown(t *testing.T) {
 		defer baseCancel(nil)
 
 		s := &Subscriber{
-			ctx:      baseCtx,
-			cancel:   baseCancel,
-			readerWg: newAsyncWaitGroup(),
+			ctx:    baseCtx,
+			cancel: baseCancel,
+			done:   make(chan struct{}),
 		}
 
 		// Simulate an in-flight reader that takes longer than the shutdown timeout.
 		readerDone := make(chan struct{})
-		s.readerWg.Go(func() {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
 			<-readerDone // Block until explicitly released.
-		})
+		}()
 
 		// Call shutdown with a very short timeout context.
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)

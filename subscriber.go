@@ -29,13 +29,15 @@ type Subscriber struct {
 	partitionDiscoveryInterval time.Duration
 
 	// Partition management.
-	mu      sync.RWMutex
-	readers map[string]*partitionReader
+	readersMu sync.RWMutex
+	readers   map[string]*partitionReader
 
 	// Control.
 	ctx      context.Context
 	cancel   context.CancelCauseFunc
-	readerWg *asyncWaitGroup
+	wg       sync.WaitGroup
+	done     chan struct{}
+	waitOnce sync.Once
 
 	// State flags.
 	started      atomic.Bool // Subscribe() has been called (not reusable).
@@ -121,10 +123,10 @@ func NewSubscriber(cfg *Config) (*Subscriber, error) {
 		maxInflight:                maxInflight,
 		partitionDiscoveryInterval: partitionDiscoveryInterval,
 		// Runtime state (initialized here to avoid data races).
-		readers:  make(map[string]*partitionReader),
-		ctx:      ctx,
-		cancel:   cancel,
-		readerWg: newAsyncWaitGroup(),
+		readers: make(map[string]*partitionReader),
+		ctx:     ctx,
+		cancel:  cancel,
+		done:    make(chan struct{}),
 	}, nil
 }
 
@@ -173,7 +175,7 @@ func (s *Subscriber) Shutdown(ctx context.Context) error {
 	}
 
 	select {
-	case <-s.readerWg.Wait():
+	case <-s.drain():
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -188,14 +190,14 @@ func (s *Subscriber) Close() error {
 		s.cancel(ErrClosed)
 
 		// Force close all readers to break out of drainInflight.
-		s.mu.RLock()
+		s.readersMu.RLock()
 		for _, reader := range s.readers {
 			reader.Close()
 		}
-		s.mu.RUnlock()
+		s.readersMu.RUnlock()
 	}
 
-	<-s.readerWg.Wait()
+	<-s.drain()
 	return nil
 }
 
@@ -211,14 +213,15 @@ func (s *Subscriber) runMainLoop() {
 		case <-s.ctx.Done():
 			return
 
-		case <-s.readerWg.WaitDone():
+		case <-s.done:
 			return
 
 		case <-ticker.C:
 			if err := s.detectAndSchedulePartitions(); err != nil {
 				if errors.Is(err, errAllPartitionsFinished) {
 					ticker.Stop()
-					s.readerWg.Wait()
+					// Start drain but don't wait; completion is detected via case <-s.done.
+					s.drain()
 					continue
 				}
 				s.fail(err)
@@ -310,8 +313,8 @@ func (s *Subscriber) detectAndSchedulePartitions() error {
 }
 
 func (s *Subscriber) startPartitionReader(partition *PartitionMetadata) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.readersMu.Lock()
+	defer s.readersMu.Unlock()
 
 	// Skip if reader already exists.
 	if _, exists := s.readers[partition.PartitionToken]; exists {
@@ -328,16 +331,30 @@ func (s *Subscriber) startPartitionReader(partition *PartitionMetadata) {
 	)
 	s.readers[partition.PartitionToken] = reader
 
-	s.readerWg.Go(func() {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
 		if err := reader.run(s.ctx); err != nil {
 			if !errors.Is(err, context.Canceled) {
 				s.fail(err)
 			}
 		}
-		s.mu.Lock()
-		defer s.mu.Unlock()
+		s.readersMu.Lock()
+		defer s.readersMu.Unlock()
 		delete(s.readers, partition.PartitionToken)
+	}()
+}
+
+// drain waits for all goroutines to finish and returns a channel that is closed when done.
+// Safe to call multiple times; only the first call starts the wait goroutine.
+func (s *Subscriber) drain() <-chan struct{} {
+	s.waitOnce.Do(func() {
+		go func() {
+			s.wg.Wait()
+			close(s.done)
+		}()
 	})
+	return s.done
 }
 
 func (s *Subscriber) fail(err error) {
