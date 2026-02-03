@@ -67,6 +67,28 @@ func newInflightTracker(maxInflight int) *inflightTracker {
 	return t
 }
 
+// sendWatermark はウォーターマークをチャネルに送信する。
+// watermark がゼロ値の場合は何もしない。
+func (t *inflightTracker) sendWatermark(watermark time.Time) {
+	if watermark.IsZero() {
+		return
+	}
+	t.sendMu.RLock()
+	defer t.sendMu.RUnlock()
+	if !t.closed.Load() {
+		t.watermarks <- watermark
+	}
+}
+
+// sendError はエラーをチャネルに送信する。
+func (t *inflightTracker) sendError(err error) {
+	t.sendMu.RLock()
+	defer t.sendMu.RUnlock()
+	if !t.closed.Load() {
+		t.errors <- err
+	}
+}
+
 // acquire acquires the semaphore (MaxInflight control).
 // Blocks if in-flight count has reached maxInflight.
 // semaphore.Weighted handles context cancellation automatically.
@@ -96,43 +118,39 @@ func (t *inflightTracker) add(timestamp time.Time) int64 {
 // complete notifies the completion of record processing and emits events as needed.
 // This function is called from goroutines (for DataChangeRecord).
 func (t *inflightTracker) complete(seq int64, err error) {
-	t.mu.Lock()
-
-	var newWatermark time.Time
-
 	if err != nil {
-		// On error: don't mark as acked (continuous ack won't advance).
-		// Only release semaphore.
-	} else {
-		// On success: ack processing and continuous ack calculation.
-		if rec, ok := t.pending[seq]; ok {
-			rec.acked = true
-		}
-		newWatermark = t.advanceWatermark()
+		t.sem.Release(1)
+		t.sendError(err)
+		return
 	}
 
-	// Release semaphore.
-	t.sem.Release(1)
+	watermark := t.completeRecord(seq)
+	t.sendWatermark(watermark)
+}
 
-	t.mu.Unlock()
+// completeRecord はレコードを acked にし、更新されたウォーターマークを返す。
+func (t *inflightTracker) completeRecord(seq int64) time.Time {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	defer t.sem.Release(1)
 
-	// Send to channel after releasing mutex (prevents deadlock).
-	// Use sendMu to synchronize with close().
-	t.sendMu.RLock()
-	if !t.closed.Load() {
-		if err != nil {
-			t.errors <- err
-		} else if !newWatermark.IsZero() {
-			t.watermarks <- newWatermark
-		}
+	if rec, ok := t.pending[seq]; ok {
+		rec.acked = true
 	}
-	t.sendMu.RUnlock()
+	return t.advanceWatermark()
 }
 
 // ackImmediate is for records that ack immediately (HeartbeatRecord, ChildPartitionsRecord).
 // Does not use semaphore (no goroutine is spawned).
 func (t *inflightTracker) ackImmediate(timestamp time.Time) {
+	watermark := t.ackImmediateRecord(timestamp)
+	t.sendWatermark(watermark)
+}
+
+// ackImmediateRecord はレコードを即座に acked として追加し、更新されたウォーターマークを返す。
+func (t *inflightTracker) ackImmediateRecord(timestamp time.Time) time.Time {
 	t.mu.Lock()
+	defer t.mu.Unlock()
 
 	seq := t.nextSeq
 	t.nextSeq++
@@ -143,16 +161,7 @@ func (t *inflightTracker) ackImmediate(timestamp time.Time) {
 		acked:     true, // Immediately acked.
 	}
 
-	newWatermark := t.advanceWatermark()
-
-	t.mu.Unlock()
-
-	// Use sendMu to synchronize with close().
-	t.sendMu.RLock()
-	if !t.closed.Load() && !newWatermark.IsZero() {
-		t.watermarks <- newWatermark
-	}
-	t.sendMu.RUnlock()
+	return t.advanceWatermark()
 }
 
 // advanceWatermark calculates continuous ack and advances the watermark.
