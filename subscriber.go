@@ -11,6 +11,82 @@ import (
 	"cloud.google.com/go/spanner"
 )
 
+// Config holds the configuration for creating a Subscriber.
+// Required fields must be set; optional fields use sensible defaults when zero.
+type Config struct {
+	// Required fields.
+	SpannerClient    *spanner.Client
+	StreamName       string
+	PartitionStorage PartitionStorage
+	Consumer         Consumer
+
+	// Optional fields (zero values use defaults).
+
+	// BaseContext is the parent context for the Subscriber.
+	// It enables external cancellation propagation, tracing context inheritance,
+	// and deadline setting.
+	// Default: context.Background()
+	BaseContext context.Context
+
+	// StartTimestamp sets the start timestamp for reading change streams.
+	// The value must be within the retention period of the change stream
+	// and before the current time.
+	// Default: time.Now()
+	StartTimestamp time.Time
+
+	// EndTimestamp sets the end timestamp for reading change streams.
+	// The value must be within the retention period of the change stream
+	// and must be after the start timestamp.
+	// Default: 9999-12-31T23:59:59.999999999Z (maximum Spanner TIMESTAMP)
+	EndTimestamp time.Time
+
+	// HeartbeatInterval sets the heartbeat interval for reading change streams.
+	// Default: 10 seconds
+	HeartbeatInterval time.Duration
+
+	// MaxInflight sets the maximum number of concurrent record processing
+	// per partition.
+	// Default: 1 (sequential processing)
+	MaxInflight int
+
+	// PartitionDiscoveryInterval sets the interval for discovering new partitions.
+	// Default: 1 second
+	PartitionDiscoveryInterval time.Duration
+}
+
+// Default values for configuration.
+var (
+	defaultEndTimestamp               = time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC) // Maximum value of Spanner TIMESTAMP type.
+	defaultHeartbeatInterval          = 10 * time.Second
+	defaultMaxInflight                = 1
+	defaultPartitionDiscoveryInterval = 1 * time.Second
+)
+
+// nowFunc is a variable for testing purposes.
+var nowFunc = time.Now
+
+// Consumer is the interface to consume the DataChangeRecord.
+//
+// Consume is called from multiple goroutines concurrently.
+// Implementations must be thread-safe.
+//
+// Return values:
+//   - nil: Processing succeeded. spream will ack this record and advance the watermark.
+//   - error: Processing failed. spream will stop subscription.
+//
+// When ctx is canceled, Consume should return ctx.Err() promptly.
+type Consumer interface {
+	Consume(ctx context.Context, change *DataChangeRecord) error
+}
+
+// ConsumerFunc is an adapter to allow the use of ordinary functions as Consumer.
+type ConsumerFunc func(context.Context, *DataChangeRecord) error
+
+// Consume calls f(ctx, change).
+func (f ConsumerFunc) Consume(ctx context.Context, change *DataChangeRecord) error {
+	return f(ctx, change)
+}
+
 // Subscriber subscribes to a change stream.
 // It manages partition readers and coordinates change stream subscription.
 //
