@@ -405,11 +405,20 @@ func TestSubscriber(t *testing.T) {
 				return
 			}
 
-			subscriber := spream.NewSubscriber(spannerClient, streamName, partitionStorage)
-
 			consumer := &consumer{}
+			subscriber, err := spream.NewSubscriber(&spream.Config{
+				SpannerClient:    spannerClient,
+				StreamName:       streamName,
+				PartitionStorage: partitionStorage,
+				Consumer:         consumer,
+			})
+			if err != nil {
+				t.Errorf("Failed to create subscriber: %v", err)
+				return
+			}
+
 			go func() {
-				_ = subscriber.Subscribe(consumer)
+				_ = subscriber.Subscribe()
 			}()
 			defer subscriber.Close()
 			t.Log("Subscribe started.")

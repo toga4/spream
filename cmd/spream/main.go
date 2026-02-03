@@ -166,26 +166,28 @@ func main() {
 		partitionStorage = ps
 	}
 
-	options := []spream.Option{}
-	if !flags.startTimestamp.IsZero() {
-		options = append(options, spream.WithStartTimestamp(flags.startTimestamp))
-	}
-	if !flags.endTimestamp.IsZero() {
-		options = append(options, spream.WithEndTimestamp(flags.endTimestamp))
-	}
-	if flags.heartbeatInterval != 0 {
-		options = append(options, spream.WithHeartbeatInterval(flags.heartbeatInterval))
+	cfg := &spream.Config{
+		SpannerClient:     spannerClient,
+		StreamName:        flags.streamName,
+		PartitionStorage:  partitionStorage,
+		Consumer:          &jsonOutputConsumer{out: os.Stdout},
+		StartTimestamp:    flags.startTimestamp,
+		EndTimestamp:      flags.endTimestamp,
+		HeartbeatInterval: flags.heartbeatInterval,
 	}
 
-	subscriber := spream.NewSubscriber(spannerClient, flags.streamName, partitionStorage, options...)
-	consumer := &jsonOutputConsumer{out: os.Stdout}
+	subscriber, err := spream.NewSubscriber(cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	fmt.Fprintln(os.Stderr, "Waiting changes...")
 
 	// Start subscribing in a separate goroutine.
 	done := make(chan error)
 	go func() {
-		done <- subscriber.Subscribe(consumer)
+		done <- subscriber.Subscribe()
 	}()
 
 	// Wait for signal and gracefully shutdown.

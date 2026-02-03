@@ -83,10 +83,31 @@ func (m *mockPartitionStorage) UpdateWatermark(ctx context.Context, partitionTok
 	return nil
 }
 
-func TestCoordinator_Shutdown(t *testing.T) {
+// newTestSubscriber creates a Subscriber for testing with the given storage.
+// This bypasses validation since tests don't need an actual Spanner client.
+func newTestSubscriber(storage PartitionStorage, partitionDiscoveryInterval time.Duration) *Subscriber {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	return &Subscriber{
+		spannerClient:              nil, // Tests don't use actual Spanner client.
+		streamName:                 "test-stream",
+		partitionStorage:           storage,
+		consumer:                   ConsumerFunc(func(ctx context.Context, record *DataChangeRecord) error { return nil }),
+		startTimestamp:             nowFunc(),
+		endTimestamp:               defaultEndTimestamp,
+		heartbeatInterval:          defaultHeartbeatInterval,
+		maxInflight:                defaultMaxInflight,
+		partitionDiscoveryInterval: partitionDiscoveryInterval,
+		readers:                    make(map[string]*partitionReader),
+		ctx:                        ctx,
+		cancel:                     cancel,
+		readerWg:                   newAsyncWaitGroup(),
+	}
+}
+
+func TestSubscriber_Shutdown(t *testing.T) {
 	t.Run("shutdown causes Subscribe to return ErrShutdown immediately", func(t *testing.T) {
 		storage := &mockPartitionStorage{
-			// Return a partition to keep the coordinator running.
+			// Return a partition to keep the subscriber running.
 			getUnfinishedMinWatermarkPartitionFunc: func(ctx context.Context) (*PartitionMetadata, error) {
 				return &PartitionMetadata{
 					PartitionToken: "test-partition",
@@ -99,42 +120,31 @@ func TestCoordinator_Shutdown(t *testing.T) {
 			},
 		}
 
-		cfg := newConfig()
-		cfg.partitionDiscoveryInterval = 100 * time.Millisecond
+		subscriber := newTestSubscriber(storage, 100*time.Millisecond)
 
-		c := newCoordinator(
-			nil,
-			"test-stream",
-			storage,
-			ConsumerFunc(func(ctx context.Context, record *DataChangeRecord) error {
-				return nil
-			}),
-			cfg,
-		)
-
-		// Run coordinator in a goroutine.
+		// Run subscriber in a goroutine.
 		runDone := make(chan error, 1)
 		go func() {
-			runDone <- c.run()
+			runDone <- subscriber.Subscribe()
 		}()
 
-		// Wait for coordinator to start.
+		// Wait for subscriber to start.
 		time.Sleep(50 * time.Millisecond)
 
 		// Call shutdown. Subscribe should return ErrShutdown immediately.
 		go func() {
 			ctx := context.Background()
-			c.shutdown(ctx)
+			subscriber.Shutdown(ctx)
 		}()
 
-		// run() should return ErrShutdown immediately.
+		// Subscribe() should return ErrShutdown immediately.
 		select {
 		case runErr := <-runDone:
 			if !errors.Is(runErr, ErrShutdown) {
-				t.Errorf("run() should return ErrShutdown, got: %v", runErr)
+				t.Errorf("Subscribe() should return ErrShutdown, got: %v", runErr)
 			}
 		case <-time.After(500 * time.Millisecond):
-			t.Error("run() should return immediately after shutdown")
+			t.Error("Subscribe() should return immediately after shutdown")
 		}
 	})
 
@@ -151,58 +161,47 @@ func TestCoordinator_Shutdown(t *testing.T) {
 			},
 		}
 
-		cfg := newConfig()
-		cfg.partitionDiscoveryInterval = 100 * time.Millisecond
+		subscriber := newTestSubscriber(storage, 100*time.Millisecond)
 
-		c := newCoordinator(
-			nil,
-			"test-stream",
-			storage,
-			ConsumerFunc(func(ctx context.Context, record *DataChangeRecord) error {
-				return nil
-			}),
-			cfg,
-		)
-
-		// Run coordinator in a goroutine.
+		// Run subscriber in a goroutine.
 		go func() {
-			c.run()
+			subscriber.Subscribe()
 		}()
 
-		// Wait for coordinator to start.
+		// Wait for subscriber to start.
 		time.Sleep(50 * time.Millisecond)
 
 		// Shutdown should return nil when drain completes (no readers to drain).
 		shutdownDone := make(chan error, 1)
 		go func() {
-			shutdownDone <- c.shutdown(context.Background())
+			shutdownDone <- subscriber.Shutdown(context.Background())
 		}()
 
 		select {
 		case err := <-shutdownDone:
 			if err != nil {
-				t.Errorf("shutdown() should return nil, got: %v", err)
+				t.Errorf("Shutdown() should return nil, got: %v", err)
 			}
 		case <-time.After(500 * time.Millisecond):
-			t.Error("shutdown() should complete when drain finishes")
+			t.Error("Shutdown() should complete when drain finishes")
 		}
 	})
 
 	t.Run("shutdown timeout returns ctx.Err()", func(t *testing.T) {
-		// Test shutdown timeout behavior directly without run().
-		// This tests that shutdown returns ctx.Err() when drain doesn't complete in time.
-		coordinatorCtx, coordinatorCancel := context.WithCancelCause(context.Background())
-		defer coordinatorCancel(nil)
+		// Test shutdown timeout behavior directly without Subscribe().
+		// This tests that Shutdown returns ctx.Err() when drain doesn't complete in time.
+		baseCtx, baseCancel := context.WithCancelCause(context.Background())
+		defer baseCancel(nil)
 
-		c := &coordinator{
-			ctx:      coordinatorCtx,
-			cancel:   coordinatorCancel,
+		s := &Subscriber{
+			ctx:      baseCtx,
+			cancel:   baseCancel,
 			readerWg: newAsyncWaitGroup(),
 		}
 
 		// Simulate an in-flight reader that takes longer than the shutdown timeout.
 		readerDone := make(chan struct{})
-		c.readerWg.Go(func() {
+		s.readerWg.Go(func() {
 			<-readerDone // Block until explicitly released.
 		})
 
@@ -210,14 +209,14 @@ func TestCoordinator_Shutdown(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 		defer cancel()
 
-		shutdownErr := c.shutdown(ctx)
+		shutdownErr := s.Shutdown(ctx)
 		if !errors.Is(shutdownErr, context.DeadlineExceeded) {
-			t.Errorf("shutdown() should return context.DeadlineExceeded, got: %v", shutdownErr)
+			t.Errorf("Shutdown() should return context.DeadlineExceeded, got: %v", shutdownErr)
 		}
 
 		// Verify shutdown state.
-		if !c.shutdownFlag.Load() {
-			t.Error("shutdownFlag should be true after shutdown()")
+		if !s.shutdownFlag.Load() {
+			t.Error("shutdownFlag should be true after Shutdown()")
 		}
 
 		// Cleanup: release the blocked reader.
@@ -225,7 +224,7 @@ func TestCoordinator_Shutdown(t *testing.T) {
 	})
 }
 
-func TestCoordinator_Close(t *testing.T) {
+func TestSubscriber_Close(t *testing.T) {
 	t.Run("close causes Subscribe to return ErrClosed", func(t *testing.T) {
 		storage := &mockPartitionStorage{
 			getUnfinishedMinWatermarkPartitionFunc: func(ctx context.Context) (*PartitionMetadata, error) {
@@ -239,35 +238,24 @@ func TestCoordinator_Close(t *testing.T) {
 			},
 		}
 
-		cfg := newConfig()
-		cfg.partitionDiscoveryInterval = 100 * time.Millisecond
+		subscriber := newTestSubscriber(storage, 100*time.Millisecond)
 
-		c := newCoordinator(
-			nil,
-			"test-stream",
-			storage,
-			ConsumerFunc(func(ctx context.Context, record *DataChangeRecord) error {
-				return nil
-			}),
-			cfg,
-		)
-
-		// Run coordinator in a goroutine.
+		// Run subscriber in a goroutine.
 		runDone := make(chan error, 1)
 		go func() {
-			runDone <- c.run()
+			runDone <- subscriber.Subscribe()
 		}()
 
-		// Wait for coordinator to start.
+		// Wait for subscriber to start.
 		time.Sleep(50 * time.Millisecond)
 
-		// Close the coordinator.
-		c.close()
+		// Close the subscriber.
+		subscriber.Close()
 
-		// run() should return ErrClosed.
+		// Subscribe() should return ErrClosed.
 		runErr := <-runDone
 		if !errors.Is(runErr, ErrClosed) {
-			t.Errorf("run() should return ErrClosed, got: %v", runErr)
+			t.Errorf("Subscribe() should return ErrClosed, got: %v", runErr)
 		}
 	})
 
@@ -284,52 +272,41 @@ func TestCoordinator_Close(t *testing.T) {
 			},
 		}
 
-		cfg := newConfig()
-		cfg.partitionDiscoveryInterval = 100 * time.Millisecond
+		subscriber := newTestSubscriber(storage, 100*time.Millisecond)
 
-		c := newCoordinator(
-			nil,
-			"test-stream",
-			storage,
-			ConsumerFunc(func(ctx context.Context, record *DataChangeRecord) error {
-				return nil
-			}),
-			cfg,
-		)
-
-		// Run coordinator in a goroutine.
+		// Run subscriber in a goroutine.
 		runDone := make(chan error, 1)
 		go func() {
-			runDone <- c.run()
+			runDone <- subscriber.Subscribe()
 		}()
 
-		// Wait for coordinator to start.
+		// Wait for subscriber to start.
 		time.Sleep(50 * time.Millisecond)
 
 		// Call close directly (which sets closedFlag and cancels context).
-		// This should cause run() to return ErrClosed.
-		c.close()
+		// This should cause Subscribe() to return ErrClosed.
+		subscriber.Close()
 
 		runErr := <-runDone
 		if !errors.Is(runErr, ErrClosed) {
-			t.Errorf("run() should return ErrClosed, got: %v", runErr)
+			t.Errorf("Subscribe() should return ErrClosed, got: %v", runErr)
 		}
 	})
 
 	t.Run("close takes precedence when both flags are set", func(t *testing.T) {
 		// Test exitError priority directly
-		c := &coordinator{}
-		c.shutdownFlag.Store(true)
-		c.closedFlag.Store(true)
+		s := &Subscriber{}
+		s.shutdownFlag.Store(true)
+		s.closedFlag.Store(true)
 
-		err := c.exitError()
+		err := s.exitError()
 		if !errors.Is(err, ErrClosed) {
 			t.Errorf("exitError() should return ErrClosed when both flags are set, got: %v", err)
 		}
 	})
 }
 
-func TestCoordinator_exitError(t *testing.T) {
+func TestSubscriber_exitError(t *testing.T) {
 	testErr := errors.New("test error")
 
 	tests := []struct {
@@ -381,15 +358,15 @@ func TestCoordinator_exitError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := &coordinator{err: tt.err}
+			s := &Subscriber{err: tt.err}
 			if tt.closedFlag {
-				c.closedFlag.Store(true)
+				s.closedFlag.Store(true)
 			}
 			if tt.shutdownFlag {
-				c.shutdownFlag.Store(true)
+				s.shutdownFlag.Store(true)
 			}
 
-			got := c.exitError()
+			got := s.exitError()
 			if !errors.Is(got, tt.want) {
 				t.Errorf("exitError() = %v, want %v", got, tt.want)
 			}
@@ -397,7 +374,7 @@ func TestCoordinator_exitError(t *testing.T) {
 	}
 }
 
-func TestCoordinator_AllPartitionsFinished(t *testing.T) {
+func TestSubscriber_AllPartitionsFinished(t *testing.T) {
 	t.Run("all partitions finished returns nil from Subscribe", func(t *testing.T) {
 		callCount := 0
 		storage := &mockPartitionStorage{
@@ -415,28 +392,17 @@ func TestCoordinator_AllPartitionsFinished(t *testing.T) {
 			},
 		}
 
-		cfg := newConfig()
-		cfg.partitionDiscoveryInterval = 50 * time.Millisecond
+		subscriber := newTestSubscriber(storage, 50*time.Millisecond)
 
-		c := newCoordinator(
-			nil,
-			"test-stream",
-			storage,
-			ConsumerFunc(func(ctx context.Context, record *DataChangeRecord) error {
-				return nil
-			}),
-			cfg,
-		)
-
-		// run() should return nil when all partitions finish.
-		runErr := c.run()
+		// Subscribe() should return nil when all partitions finish.
+		runErr := subscriber.Subscribe()
 		if runErr != nil {
-			t.Errorf("run() should return nil, got: %v", runErr)
+			t.Errorf("Subscribe() should return nil, got: %v", runErr)
 		}
 	})
 }
 
-func TestCoordinator_ExistingError(t *testing.T) {
+func TestSubscriber_ExistingError(t *testing.T) {
 	t.Run("existing error takes precedence", func(t *testing.T) {
 		existingErr := errors.New("existing error")
 
@@ -447,22 +413,108 @@ func TestCoordinator_ExistingError(t *testing.T) {
 			},
 		}
 
-		cfg := newConfig()
+		subscriber := newTestSubscriber(storage, 100*time.Millisecond)
 
-		c := newCoordinator(
-			nil,
-			"test-stream",
-			storage,
-			ConsumerFunc(func(ctx context.Context, record *DataChangeRecord) error {
-				return nil
-			}),
-			cfg,
-		)
-
-		// run() should return the existing error (initialization fails).
-		runErr := c.run()
+		// Subscribe() should return the existing error (initialization fails).
+		runErr := subscriber.Subscribe()
 		if !errors.Is(runErr, existingErr) {
-			t.Errorf("run() should return existing error, got: %v", runErr)
+			t.Errorf("Subscribe() should return existing error, got: %v", runErr)
 		}
 	})
+}
+
+func TestSubscriber_AlreadyStarted(t *testing.T) {
+	t.Run("Subscribe returns error when called twice", func(t *testing.T) {
+		storage := &mockPartitionStorage{
+			getUnfinishedMinWatermarkPartitionFunc: func(ctx context.Context) (*PartitionMetadata, error) {
+				return &PartitionMetadata{
+					PartitionToken: "test-partition",
+					Watermark:      time.Now(),
+				}, nil
+			},
+			getSchedulablePartitionsFunc: func(ctx context.Context, minWatermark time.Time) ([]*PartitionMetadata, error) {
+				return nil, nil
+			},
+		}
+
+		subscriber := newTestSubscriber(storage, 100*time.Millisecond)
+
+		// Start the first Subscribe in a goroutine.
+		go func() {
+			subscriber.Subscribe()
+		}()
+
+		// Wait for subscriber to start.
+		time.Sleep(50 * time.Millisecond)
+
+		// Try to call Subscribe again.
+		err := subscriber.Subscribe()
+		if err == nil || err.Error() != "spream: subscriber already started" {
+			t.Errorf("expected 'subscriber already started' error, got: %v", err)
+		}
+
+		// Cleanup.
+		subscriber.Close()
+	})
+}
+
+func TestNewSubscriber_Validation(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *Config
+		wantErr string
+	}{
+		{
+			name:    "nil config",
+			cfg:     nil,
+			wantErr: "spream: config is required",
+		},
+		{
+			name: "nil SpannerClient",
+			cfg: &Config{
+				StreamName:       "test",
+				PartitionStorage: &mockPartitionStorage{},
+				Consumer:         ConsumerFunc(func(ctx context.Context, record *DataChangeRecord) error { return nil }),
+			},
+			wantErr: "spream: SpannerClient is required",
+		},
+		{
+			name: "empty StreamName",
+			cfg: &Config{
+				SpannerClient:    nil, // We can't easily create a real client for this test.
+				PartitionStorage: &mockPartitionStorage{},
+				Consumer:         ConsumerFunc(func(ctx context.Context, record *DataChangeRecord) error { return nil }),
+			},
+			wantErr: "spream: SpannerClient is required", // SpannerClient is checked first.
+		},
+		{
+			name: "nil PartitionStorage",
+			cfg: &Config{
+				StreamName: "test",
+				Consumer:   ConsumerFunc(func(ctx context.Context, record *DataChangeRecord) error { return nil }),
+			},
+			wantErr: "spream: SpannerClient is required", // SpannerClient is checked first.
+		},
+		{
+			name: "nil Consumer",
+			cfg: &Config{
+				StreamName:       "test",
+				PartitionStorage: &mockPartitionStorage{},
+			},
+			wantErr: "spream: SpannerClient is required", // SpannerClient is checked first.
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewSubscriber(tt.cfg)
+			if err == nil {
+				t.Error("expected error, got nil")
+				return
+			}
+			if err.Error() != tt.wantErr {
+				t.Errorf("expected error %q, got %q", tt.wantErr, err.Error())
+			}
+		})
+	}
 }

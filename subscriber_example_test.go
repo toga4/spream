@@ -26,20 +26,27 @@ func ExampleNewSubscriber() {
 	}
 	defer spannerClient.Close()
 
-	changeStreamName := "FooStream"
-	subscriber := spream.NewSubscriber(spannerClient, changeStreamName, partitionstorage.NewInmemory())
+	var mu sync.Mutex
+	subscriber, err := spream.NewSubscriber(&spream.Config{
+		SpannerClient:    spannerClient,
+		StreamName:       "FooStream",
+		PartitionStorage: partitionstorage.NewInmemory(),
+		Consumer: spream.ConsumerFunc(func(_ context.Context, change *spream.DataChangeRecord) error {
+			mu.Lock()
+			defer mu.Unlock()
+			return json.NewEncoder(os.Stdout).Encode(change)
+		}),
+	})
+	if err != nil {
+		panic(err)
+	}
 
 	fmt.Fprintf(os.Stderr, "Reading the stream...\n")
 
 	// Start subscribing in a separate goroutine.
 	done := make(chan error)
-	var mu sync.Mutex
 	go func() {
-		done <- subscriber.SubscribeFunc(func(_ context.Context, change *spream.DataChangeRecord) error {
-			mu.Lock()
-			defer mu.Unlock()
-			return json.NewEncoder(os.Stdout).Encode(change)
-		})
+		done <- subscriber.Subscribe()
 	}()
 
 	// Wait for signal and gracefully shutdown.

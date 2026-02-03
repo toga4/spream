@@ -33,21 +33,23 @@ func ExampleNewSubscriber_withOptions() {
 		panic(err)
 	}
 
-	changeStreamName := "FooStream"
-	subscriber := spream.NewSubscriber(
-		spannerClient,
-		changeStreamName,
-		partitionStorage,
-		spream.WithStartTimestamp(time.Now().Add(-time.Hour)),  // Start subscribing from 1 hour ago.
-		spream.WithEndTimestamp(time.Now().Add(5*time.Minute)), // Stop subscribing after 5 minutes.
-		spream.WithHeartbeatInterval(3*time.Second),
-	)
+	subscriber, err := spream.NewSubscriber(&spream.Config{
+		SpannerClient:     spannerClient,
+		StreamName:        "FooStream",
+		PartitionStorage:  partitionStorage,
+		Consumer:          &Logger{out: os.Stdout},
+		StartTimestamp:    time.Now().Add(-time.Hour),  // Start subscribing from 1 hour ago.
+		EndTimestamp:      time.Now().Add(5 * time.Minute), // Stop subscribing after 5 minutes.
+		HeartbeatInterval: 3 * time.Second,
+	})
+	if err != nil {
+		panic(err)
+	}
 
 	// Start subscribing in a separate goroutine.
 	done := make(chan error)
-	logger := &Logger{out: os.Stdout}
 	go func() {
-		done <- subscriber.Subscribe(logger)
+		done <- subscriber.Subscribe()
 	}()
 
 	// Wait for signal and gracefully shutdown.
