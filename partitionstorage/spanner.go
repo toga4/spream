@@ -42,7 +42,7 @@ func WithRequestPriority(priority spannerpb.RequestOptions_Priority) spannerOpti
 	return withRequestPriority(priority)
 }
 
-// NewSpanner creates new instance of SpannerPartitionStorage
+// NewSpanner creates a new instance of SpannerPartitionStorage.
 func NewSpanner(client *spanner.Client, tableName string, options ...spannerOption) *SpannerPartitionStorage {
 	c := &spannerConfig{}
 	for _, o := range options {
@@ -73,6 +73,7 @@ const (
 	columnFinishedAt      = "FinishedAt"
 )
 
+// CreateTableIfNotExists creates the partition metadata table if it does not exist.
 func (s *SpannerPartitionStorage) CreateTableIfNotExists(ctx context.Context) error {
 	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx)
 	if err != nil {

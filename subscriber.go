@@ -116,9 +116,9 @@ type Subscriber struct {
 	waitOnce sync.Once
 
 	// State flags.
-	started      atomic.Bool // Subscribe() has been called (not reusable).
-	shutdown atomic.Bool
-	closed   atomic.Bool
+	started  atomic.Bool // Subscribe() has been called (not reusable).
+	shutdown atomic.Bool // Shutdown() has been called.
+	closed   atomic.Bool // Close() has been called.
 
 	// Error handling.
 	// err records the first error from fail() and is returned by Subscribe()
@@ -239,12 +239,10 @@ func (s *Subscriber) Subscribe() error {
 }
 
 // Shutdown gracefully shuts down the subscriber.
-// It causes Subscribe to return ErrShutdown immediately, then waits for
-// in-flight records to complete (drain).
+// It causes Subscribe to return ErrShutdown immediately, then waits for in-flight records to complete (drain).
 //
-// If the context is canceled or times out before drain completes,
-// Shutdown returns ctx.Err(). The drain continues in the background;
-// call Close to abort it.
+// If the context is canceled or times out before drain completes, Shutdown returns ctx.Err().
+// The drain continues in the background; call Close to abort it.
 func (s *Subscriber) Shutdown(ctx context.Context) error {
 	if !s.shutdown.Swap(true) {
 		s.cancel(errGracefulShutdown)

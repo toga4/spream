@@ -11,6 +11,7 @@ import (
 
 // inflightTracker tracks in-flight records within a partition.
 type inflightTracker struct {
+	// mu protects sequence management and uncommitted records.
 	mu sync.Mutex
 
 	// sendMu synchronizes channel sends and close operations.
@@ -66,8 +67,7 @@ func newInflightTracker(maxInflight int) *inflightTracker {
 	return t
 }
 
-// sendWatermark はウォーターマークをチャネルに送信する。
-// watermark がゼロ値の場合は何もしない。
+// sendWatermark sends a watermark to the channel. It does nothing if watermark is zero.
 func (t *inflightTracker) sendWatermark(watermark time.Time) {
 	if watermark.IsZero() {
 		return
@@ -79,7 +79,7 @@ func (t *inflightTracker) sendWatermark(watermark time.Time) {
 	}
 }
 
-// sendError はエラーをチャネルに送信する。
+// sendError sends an error to the channel.
 func (t *inflightTracker) sendError(err error) {
 	t.sendMu.RLock()
 	defer t.sendMu.RUnlock()
@@ -127,7 +127,7 @@ func (t *inflightTracker) complete(seq int64, err error) {
 	t.sendWatermark(watermark)
 }
 
-// completeRecord はレコードを acked にし、更新されたウォーターマークを返す。
+// completeRecord marks the record as acked and returns the updated watermark.
 func (t *inflightTracker) completeRecord(seq int64) time.Time {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -146,7 +146,7 @@ func (t *inflightTracker) ackImmediate(timestamp time.Time) {
 	t.sendWatermark(watermark)
 }
 
-// ackImmediateRecord はレコードを即座に acked として追加し、更新されたウォーターマークを返す。
+// ackImmediateRecord adds a record as immediately acked and returns the updated watermark.
 func (t *inflightTracker) ackImmediateRecord(timestamp time.Time) time.Time {
 	t.mu.Lock()
 	defer t.mu.Unlock()

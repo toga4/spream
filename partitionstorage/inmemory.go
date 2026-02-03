@@ -15,7 +15,7 @@ type InmemoryPartitionStorage struct {
 	m  map[string]*spream.PartitionMetadata
 }
 
-// NewInmemory creates new instance of InmemoryPartitionStorage
+// NewInmemory creates a new instance of InmemoryPartitionStorage.
 func NewInmemory() *InmemoryPartitionStorage {
 	return &InmemoryPartitionStorage{
 		m: make(map[string]*spream.PartitionMetadata),

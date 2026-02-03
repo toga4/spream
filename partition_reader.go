@@ -22,9 +22,8 @@ type partitionReader struct {
 	spannerClient    *spanner.Client
 	streamName       string
 	partitionStorage PartitionStorage
-	consumer         Consumer
-
-	tracker *inflightTracker
+	consumer Consumer
+	tracker  *inflightTracker
 }
 
 func newPartitionReader(
@@ -114,8 +113,7 @@ func (r *partitionReader) processWatermarks(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
-			if err := r.partitionStorage.UpdateWatermark(ctx, r.partitionToken, watermark,
-			); err != nil {
+			if err := r.partitionStorage.UpdateWatermark(ctx, r.partitionToken, watermark); err != nil {
 				return fmt.Errorf("update watermark: %w", err)
 			}
 		}
