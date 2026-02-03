@@ -60,8 +60,8 @@ func newCoordinator(
 		partitionStorage: partitionStorage,
 		consumer:         consumer,
 		config:           cfg,
-		readers:    make(map[string]*partitionReader),
-		shutdownCh: make(chan struct{}),
+		readers:          make(map[string]*partitionReader),
+		shutdownCh:       make(chan struct{}),
 	}
 }
 
@@ -110,7 +110,7 @@ func (c *coordinator) runMainLoop() {
 					c.readerWg.Wait()
 					continue
 				}
-				c.recordError(err)
+				c.fail(err)
 				return
 			}
 		}
@@ -216,24 +216,18 @@ func (c *coordinator) startPartitionReader(partition *PartitionMetadata) {
 	c.readers[partition.PartitionToken] = reader
 
 	c.readerWg.Go(func() {
-		err := reader.run(c.ctx)
-		c.removeReader(partition.PartitionToken)
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				return // Shutdown or Close.
+		if err := reader.run(c.ctx); err != nil {
+			if !errors.Is(err, context.Canceled) {
+				c.fail(err)
 			}
-			c.recordError(err)
 		}
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		delete(c.readers, partition.PartitionToken)
 	})
 }
 
-func (c *coordinator) removeReader(partitionToken string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.readers, partitionToken)
-}
-
-func (c *coordinator) recordError(err error) {
+func (c *coordinator) fail(err error) {
 	c.errOnce.Do(func() {
 		c.err = err
 		c.cancel(err)
