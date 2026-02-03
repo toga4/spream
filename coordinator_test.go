@@ -195,14 +195,16 @@ func TestCoordinator_Shutdown(t *testing.T) {
 		defer coordinatorCancel(nil)
 
 		c := &coordinator{
-			ctx:            coordinatorCtx,
-			cancel:         coordinatorCancel,
-			shutdownCh:     make(chan struct{}),
-			allReadersDone: make(chan struct{}),
+			ctx:        coordinatorCtx,
+			cancel:     coordinatorCancel,
+			shutdownCh: make(chan struct{}),
 		}
 
-		// Simulate an in-flight reader that never finishes.
-		// (allReadersDone is never closed)
+		// Simulate an in-flight reader that takes longer than the shutdown timeout.
+		readerDone := make(chan struct{})
+		c.readerWg.Go(func() {
+			<-readerDone // Block until explicitly released.
+		})
 
 		// Call shutdown with a very short timeout context.
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
@@ -217,6 +219,9 @@ func TestCoordinator_Shutdown(t *testing.T) {
 		if !c.shutdownFlag.Load() {
 			t.Error("shutdownFlag should be true after shutdown()")
 		}
+
+		// Cleanup: release the blocked reader.
+		close(readerDone)
 	})
 }
 

@@ -25,14 +25,12 @@ type coordinator struct {
 	readers map[string]*partitionReader
 
 	// Control.
-	ctx    context.Context
-	cancel context.CancelCauseFunc
-	wg     sync.WaitGroup
+	ctx      context.Context
+	cancel   context.CancelCauseFunc
+	readerWg asyncWaitGroup
 
-	// Completion notification.
-	done           chan struct{} // closed when run() exits
-	shutdownCh     chan struct{} // closed when shutdown() is called
-	allReadersDone chan struct{} // closed when all readers finish
+	// Shutdown notification.
+	shutdownCh chan struct{} // closed when shutdown() is called
 
 	// Shutdown/close state.
 	shutdownFlag atomic.Bool
@@ -62,24 +60,14 @@ func newCoordinator(
 		partitionStorage: partitionStorage,
 		consumer:         consumer,
 		config:           cfg,
-		readers:          make(map[string]*partitionReader),
-		done:             make(chan struct{}),
-		shutdownCh:       make(chan struct{}),
-		allReadersDone:   make(chan struct{}),
+		readers:    make(map[string]*partitionReader),
+		shutdownCh: make(chan struct{}),
 	}
 }
 
 func (c *coordinator) run() error {
-	defer close(c.done)
-
 	c.ctx, c.cancel = context.WithCancelCause(context.Background())
 	defer c.cancel(nil)
-
-	// Monitor wg.Wait() in a goroutine.
-	go func() {
-		c.wg.Wait()
-		close(c.allReadersDone)
-	}()
 
 	// 1. Initialize.
 	if err := c.initialize(); err != nil {
@@ -95,8 +83,6 @@ func (c *coordinator) run() error {
 	ticker := time.NewTicker(c.config.partitionDiscoveryInterval)
 	defer ticker.Stop()
 
-	allPartitionsFinished := false
-
 loop:
 	for {
 		select {
@@ -104,26 +90,17 @@ loop:
 			break loop
 
 		case <-c.ctx.Done():
-			// Close was called.
 			break loop
 
-		case <-c.allReadersDone:
-			// All readers finished. Only break if all partitions are finished.
-			if allPartitionsFinished {
-				break loop
-			}
+		case <-c.readerWg.WaitDone():
+			break loop
 
 		case <-ticker.C:
 			if err := c.detectAndSchedulePartitions(); err != nil {
 				if errors.Is(err, errAllPartitionsFinished) {
-					allPartitionsFinished = true
-					// Check if all readers are already done.
-					select {
-					case <-c.allReadersDone:
-						break loop
-					default:
-						continue // Wait for allReadersDone.
-					}
+					ticker.Stop()
+					c.readerWg.Wait()
+					continue
 				}
 				c.recordError(err)
 				break loop
@@ -232,9 +209,7 @@ func (c *coordinator) startPartitionReader(partition *PartitionMetadata) {
 	)
 	c.readers[partition.PartitionToken] = reader
 
-	c.wg.Add(1)
-	go func() {
-		defer c.wg.Done()
+	c.readerWg.Go(func() {
 		err := reader.run(c.ctx)
 		c.removeReader(partition.PartitionToken)
 		if err != nil {
@@ -243,7 +218,7 @@ func (c *coordinator) startPartitionReader(partition *PartitionMetadata) {
 			}
 			c.recordError(err)
 		}
-	}()
+	})
 }
 
 func (c *coordinator) removeReader(partitionToken string) {
@@ -270,7 +245,7 @@ func (c *coordinator) shutdown(ctx context.Context) error {
 	})
 
 	select {
-	case <-c.allReadersDone:
+	case <-c.readerWg.Wait():
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -292,6 +267,6 @@ func (c *coordinator) close() error {
 		c.mu.RUnlock()
 	})
 
-	<-c.allReadersDone
+	<-c.readerWg.Wait()
 	return nil
 }
