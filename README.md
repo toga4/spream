@@ -7,14 +7,14 @@ Cloud Spanner Change Streams Subscriber for Go
 
 ## Synopsis
 
-This library is an implementation to subscribe a change stream's records of Google Cloud Spanner in Go.
-It is heavily inspired by the SpannerIO connector of the [Apache Beam SDK](https://github.com/apache/beam) and is compatible with the PartitionMetadata data model.
+A Go library for subscribing to Google Cloud Spanner change streams.
+It is heavily inspired by the SpannerIO connector of the [Apache Beam SDK](https://github.com/apache/beam) and uses a compatible PartitionMetadata data model.
 
 ## Motivation
 
-To read a change streams, Google Cloud offers [Dataflow connector](https://cloud.google.com/spanner/docs/change-streams/use-dataflow) as a scalable and reliable solution, but in some cases the abstraction and capabilities of Dataflow pipelines can be too much (or is simply too expensive).
-For more flexibility, use the change stream API directly, but it is a bit complex.
-This library aims to make reading change streams more flexible and casual, while maintaining an easily transition to the use of Dataflow connectors as needed.
+For reading change streams, Google Cloud offers the [Dataflow connector](https://cloud.google.com/spanner/docs/change-streams/use-dataflow) as a scalable and reliable solution. However, the abstraction and capabilities of Dataflow pipelines can be overkill for some use cases (or simply too expensive).
+Using the change stream API directly offers more flexibility, but it's fairly complex.
+This library aims to make reading change streams simpler and more accessible, while maintaining an easy transition to Dataflow when needed.
 
 For design philosophy and key decisions, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -85,7 +85,7 @@ func (l *Logger) Consume(change *spream.DataChangeRecord) error {
 
 ## CLI
 
-Use the CLI as a tool for tracking change streams or as a more detailed implementation example.
+A command-line tool for tailing change streams. Also serves as a reference implementation.
 
 ### Installation
 
@@ -128,7 +128,7 @@ Waiting changes...
 
 ## Credits
 
-Heavily inspired by below projects.
+Heavily inspired by the following projects:
 
 - The SpannerIO connector of the Apache Beam SDK. (https://github.com/apache/beam)
 - spanner-change-streams-tail (https://github.com/cloudspannerecosystem/spanner-change-streams-tail)
