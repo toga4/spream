@@ -117,8 +117,8 @@ type Subscriber struct {
 
 	// State flags.
 	started      atomic.Bool // Subscribe() has been called (not reusable).
-	shutdownFlag atomic.Bool
-	closedFlag   atomic.Bool
+	shutdown atomic.Bool
+	closed   atomic.Bool
 
 	// Error handling.
 	// err records the first error from fail() and is returned by Subscribe()
@@ -246,7 +246,7 @@ func (s *Subscriber) Subscribe() error {
 // Shutdown returns ctx.Err(). The drain continues in the background;
 // call Close to abort it.
 func (s *Subscriber) Shutdown(ctx context.Context) error {
-	if !s.shutdownFlag.Swap(true) {
+	if !s.shutdown.Swap(true) {
 		s.cancel(errGracefulShutdown)
 	}
 
@@ -262,13 +262,13 @@ func (s *Subscriber) Shutdown(ctx context.Context) error {
 // It does not wait for in-flight records to complete.
 // Subscribe returns ErrClosed.
 func (s *Subscriber) Close() error {
-	if !s.closedFlag.Swap(true) {
+	if !s.closed.Swap(true) {
 		s.cancel(ErrClosed)
 
 		// Force close all readers to break out of drainInflight.
 		s.readersMu.RLock()
 		for _, reader := range s.readers {
-			reader.Close()
+			reader.close()
 		}
 		s.readersMu.RUnlock()
 	}
@@ -312,13 +312,13 @@ func (s *Subscriber) runMainLoop() {
 // Error takes precedence over Shutdown because if an error occurs during
 // graceful shutdown, that error should be reported instead of ErrShutdown.
 func (s *Subscriber) exitError() error {
-	if s.closedFlag.Load() {
+	if s.closed.Load() {
 		return ErrClosed
 	}
 	if s.err != nil {
 		return s.err
 	}
-	if s.shutdownFlag.Load() {
+	if s.shutdown.Load() {
 		return ErrShutdown
 	}
 	return nil

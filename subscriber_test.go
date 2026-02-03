@@ -217,8 +217,8 @@ func TestSubscriber_Shutdown(t *testing.T) {
 		}
 
 		// Verify shutdown state.
-		if !s.shutdownFlag.Load() {
-			t.Error("shutdownFlag should be true after Shutdown()")
+		if !s.shutdown.Load() {
+			t.Error("shutdown should be true after Shutdown()")
 		}
 
 		// Cleanup: release the blocked reader.
@@ -285,7 +285,7 @@ func TestSubscriber_Close(t *testing.T) {
 		// Wait for subscriber to start.
 		time.Sleep(50 * time.Millisecond)
 
-		// Call close directly (which sets closedFlag and cancels context).
+		// Call close directly (which sets closed and cancels context).
 		// This should cause Subscribe() to return ErrClosed.
 		subscriber.Close()
 
@@ -298,8 +298,8 @@ func TestSubscriber_Close(t *testing.T) {
 	t.Run("close takes precedence when both flags are set", func(t *testing.T) {
 		// Test exitError priority directly
 		s := &Subscriber{}
-		s.shutdownFlag.Store(true)
-		s.closedFlag.Store(true)
+		s.shutdown.Store(true)
+		s.closed.Store(true)
 
 		err := s.exitError()
 		if !errors.Is(err, ErrClosed) {
@@ -312,11 +312,11 @@ func TestSubscriber_exitError(t *testing.T) {
 	testErr := errors.New("test error")
 
 	tests := []struct {
-		name         string
-		closedFlag   bool
-		shutdownFlag bool
-		err          error
-		want         error
+		name     string
+		closed   bool
+		shutdown bool
+		err      error
+		want     error
 	}{
 		{
 			name: "no flags and no error returns nil",
@@ -324,12 +324,12 @@ func TestSubscriber_exitError(t *testing.T) {
 		},
 		{
 			name:         "shutdown only returns ErrShutdown",
-			shutdownFlag: true,
+			shutdown: true,
 			want:         ErrShutdown,
 		},
 		{
 			name:       "close only returns ErrClosed",
-			closedFlag: true,
+			closed: true,
 			want:       ErrClosed,
 		},
 		{
@@ -339,20 +339,20 @@ func TestSubscriber_exitError(t *testing.T) {
 		},
 		{
 			name:         "error takes precedence over shutdown",
-			shutdownFlag: true,
+			shutdown: true,
 			err:          testErr,
 			want:         testErr,
 		},
 		{
 			name:       "close takes precedence over error",
-			closedFlag: true,
+			closed: true,
 			err:        testErr,
 			want:       ErrClosed,
 		},
 		{
 			name:         "close takes precedence over shutdown and error",
-			closedFlag:   true,
-			shutdownFlag: true,
+			closed:   true,
+			shutdown: true,
 			err:          testErr,
 			want:         ErrClosed,
 		},
@@ -361,11 +361,11 @@ func TestSubscriber_exitError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := &Subscriber{err: tt.err}
-			if tt.closedFlag {
-				s.closedFlag.Store(true)
+			if tt.closed {
+				s.closed.Store(true)
 			}
-			if tt.shutdownFlag {
-				s.shutdownFlag.Store(true)
+			if tt.shutdown {
+				s.shutdown.Store(true)
 			}
 
 			got := s.exitError()

@@ -14,7 +14,7 @@ import (
 type partitionReader struct {
 	// Partition information (extracted from PartitionMetadata at creation time).
 	partitionToken  string
-	startWatermark  time.Time // Query start position (initial value).
+	startTimestamp  time.Time // Query start position (initial value).
 	endTimestamp    time.Time
 	heartbeatMillis int64
 
@@ -37,7 +37,7 @@ func newPartitionReader(
 ) *partitionReader {
 	return &partitionReader{
 		partitionToken:   partition.PartitionToken,
-		startWatermark:   partition.Watermark,
+		startTimestamp:   partition.Watermark,
 		endTimestamp:     partition.EndTimestamp,
 		heartbeatMillis:  partition.HeartbeatMillis,
 		spannerClient:    spannerClient,
@@ -99,8 +99,8 @@ func (r *partitionReader) drainInflight() {
 	r.tracker.drain()
 }
 
-// Close forcefully closes the partition reader, interrupting any drainInflight.
-func (r *partitionReader) Close() {
+// close forcefully closes the partition reader, interrupting any drainInflight.
+func (r *partitionReader) close() {
 	r.tracker.close()
 }
 
@@ -152,7 +152,7 @@ func (r *partitionReader) buildStatement() spanner.Statement {
 	stmt := spanner.Statement{
 		SQL: fmt.Sprintf("SELECT ChangeRecord FROM READ_%s (@startTimestamp, @endTimestamp, @partitionToken, @heartbeatMilliseconds)", r.streamName),
 		Params: map[string]any{
-			"startTimestamp":        r.startWatermark,
+			"startTimestamp":        r.startTimestamp,
 			"endTimestamp":          r.endTimestamp,
 			"partitionToken":        r.partitionToken,
 			"heartbeatMilliseconds": r.heartbeatMillis,

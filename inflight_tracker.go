@@ -23,8 +23,8 @@ type inflightTracker struct {
 	// Sequence management.
 	nextSeq int64
 
-	// State tracking (acked flag integrated into pending).
-	pending map[int64]*pendingRecord
+	// State tracking (acked flag integrated into uncommitted).
+	uncommitted map[int64]*uncommittedRecord
 
 	// Continuous ack tracking.
 	lastContinuousAcked int64
@@ -37,15 +37,15 @@ type inflightTracker struct {
 	closed atomic.Bool
 
 	// Graceful shutdown.
-	// When shutdown=true and pending=0, done is closed.
-	shutdown atomic.Bool
+	// When draining=true and uncommitted is empty, done is closed.
+	draining atomic.Bool
 
 	// For waitAllCompleted.
 	done      chan struct{}
 	closeDone func()
 }
 
-type pendingRecord struct {
+type uncommittedRecord struct {
 	seq       int64
 	timestamp time.Time
 	acked     bool
@@ -55,7 +55,7 @@ type pendingRecord struct {
 func newInflightTracker(maxInflight int) *inflightTracker {
 	t := &inflightTracker{
 		sem:                 semaphore.NewWeighted(int64(maxInflight)),
-		pending:             make(map[int64]*pendingRecord),
+		uncommitted:         make(map[int64]*uncommittedRecord),
 		lastContinuousAcked: -1, // Sequence numbers start from 0.
 		watermarks:          make(chan time.Time, maxInflight),
 		errors:              make(chan error, maxInflight),
@@ -106,7 +106,7 @@ func (t *inflightTracker) add(timestamp time.Time) int64 {
 	seq := t.nextSeq
 	t.nextSeq++
 
-	t.pending[seq] = &pendingRecord{
+	t.uncommitted[seq] = &uncommittedRecord{
 		seq:       seq,
 		timestamp: timestamp,
 	}
@@ -133,7 +133,7 @@ func (t *inflightTracker) completeRecord(seq int64) time.Time {
 	defer t.mu.Unlock()
 	defer t.sem.Release(1)
 
-	if rec, ok := t.pending[seq]; ok {
+	if rec, ok := t.uncommitted[seq]; ok {
 		rec.acked = true
 	}
 	return t.advanceWatermark()
@@ -154,7 +154,7 @@ func (t *inflightTracker) ackImmediateRecord(timestamp time.Time) time.Time {
 	seq := t.nextSeq
 	t.nextSeq++
 
-	t.pending[seq] = &pendingRecord{
+	t.uncommitted[seq] = &uncommittedRecord{
 		seq:       seq,
 		timestamp: timestamp,
 		acked:     true, // Immediately acked.
@@ -171,7 +171,7 @@ func (t *inflightTracker) advanceWatermark() time.Time {
 
 	for {
 		nextExpected := t.lastContinuousAcked + 1
-		rec, ok := t.pending[nextExpected]
+		rec, ok := t.uncommitted[nextExpected]
 		if !ok || !rec.acked {
 			break
 		}
@@ -179,11 +179,11 @@ func (t *inflightTracker) advanceWatermark() time.Time {
 		watermark = rec.timestamp
 
 		t.lastContinuousAcked = nextExpected
-		delete(t.pending, nextExpected)
+		delete(t.uncommitted, nextExpected)
 	}
 
 	// Close done if pending becomes 0 during shutdown phase.
-	if t.shutdown.Load() && len(t.pending) == 0 {
+	if t.draining.Load() && len(t.uncommitted) == 0 {
 		t.closeDone()
 	}
 
@@ -193,11 +193,11 @@ func (t *inflightTracker) advanceWatermark() time.Time {
 // drain initiates graceful shutdown and waits until all in-flight records are completed.
 // Call after readStream() has finished.
 func (t *inflightTracker) drain() {
-	t.shutdown.Store(true)
+	t.draining.Store(true)
 
 	// Close done immediately if pending is already 0.
 	t.mu.Lock()
-	if len(t.pending) == 0 {
+	if len(t.uncommitted) == 0 {
 		t.closeDone()
 	}
 	t.mu.Unlock()
