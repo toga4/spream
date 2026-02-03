@@ -196,7 +196,7 @@ func main() {
 		subscriber.Close()
 	}
 
-	if err := <-done; err != nil && !errors.Is(err, spream.ErrSubscriberClosed) {
+	if err := <-done; err != nil && !errors.Is(err, spream.ErrShutdown) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

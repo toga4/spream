@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"cloud.google.com/go/spanner"
@@ -29,7 +30,15 @@ type coordinator struct {
 	wg     sync.WaitGroup
 
 	// Completion notification.
-	done chan struct{}
+	done           chan struct{} // closed when run() exits
+	shutdownCh     chan struct{} // closed when shutdown() is called
+	allReadersDone chan struct{} // closed when all readers finish
+
+	// Shutdown/close state.
+	shutdownFlag atomic.Bool
+	closedFlag   atomic.Bool
+	shutdownOnce sync.Once
+	closeOnce    sync.Once
 
 	// Error handling.
 	// spream has two error propagation paths: the err field and context.Cause.
@@ -55,6 +64,8 @@ func newCoordinator(
 		config:           cfg,
 		readers:          make(map[string]*partitionReader),
 		done:             make(chan struct{}),
+		shutdownCh:       make(chan struct{}),
+		allReadersDone:   make(chan struct{}),
 	}
 }
 
@@ -63,6 +74,12 @@ func (c *coordinator) run() error {
 
 	c.ctx, c.cancel = context.WithCancelCause(context.Background())
 	defer c.cancel(nil)
+
+	// Monitor wg.Wait() in a goroutine.
+	go func() {
+		c.wg.Wait()
+		close(c.allReadersDone)
+	}()
 
 	// 1. Initialize.
 	if err := c.initialize(); err != nil {
@@ -74,22 +91,60 @@ func (c *coordinator) run() error {
 		return fmt.Errorf("resume interrupted partitions: %w", err)
 	}
 
-	// 3. Partition detection loop.
-	c.wg.Add(1)
-	go c.detectNewPartitionsLoop()
+	// 3. Main loop: partition detection and shutdown handling.
+	ticker := time.NewTicker(c.config.partitionDiscoveryInterval)
+	defer ticker.Stop()
 
-	// 4. Wait for completion.
-	c.wg.Wait()
+	allPartitionsFinished := false
 
-	if c.err != nil {
-		return c.err
+loop:
+	for {
+		select {
+		case <-c.shutdownCh:
+			break loop
+
+		case <-c.ctx.Done():
+			// Close was called.
+			break loop
+
+		case <-c.allReadersDone:
+			// All readers finished. Only break if all partitions are finished.
+			if allPartitionsFinished {
+				break loop
+			}
+
+		case <-ticker.C:
+			if err := c.detectAndSchedulePartitions(); err != nil {
+				if errors.Is(err, errAllPartitionsFinished) {
+					allPartitionsFinished = true
+					// Check if all readers are already done.
+					select {
+					case <-c.allReadersDone:
+						break loop
+					default:
+						continue // Wait for allReadersDone.
+					}
+				}
+				c.recordError(err)
+				break loop
+			}
+		}
 	}
 
-	// Determine exit reason from the cancel cause:
-	// - initiateShutdown / shutdown: cancel(errGracefulShutdown) → return nil
-	// - close: cancel(ErrSubscriberClosed) → return ErrSubscriberClosed
-	if cause := context.Cause(c.ctx); cause != nil && cause != errGracefulShutdown {
-		return cause
+	return c.exitError()
+}
+
+// exitError determines the return value based on shutdown/close state and errors.
+// Priority: Close > Shutdown > Error > nil (normal completion).
+func (c *coordinator) exitError() error {
+	if c.closedFlag.Load() {
+		return ErrClosed
+	}
+	if c.shutdownFlag.Load() {
+		return ErrShutdown
+	}
+	if c.err != nil {
+		return c.err
 	}
 	return nil
 }
@@ -122,29 +177,6 @@ func (c *coordinator) resumeInterruptedPartitions() error {
 		c.startPartitionReader(p)
 	}
 	return nil
-}
-
-func (c *coordinator) detectNewPartitionsLoop() {
-	defer c.wg.Done()
-
-	ticker := time.NewTicker(c.config.partitionDiscoveryInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		case <-ticker.C:
-			if err := c.detectAndSchedulePartitions(); err != nil {
-				if errors.Is(err, errAllPartitionsFinished) {
-					c.initiateShutdown()
-					return
-				}
-				c.recordError(err)
-				return
-			}
-		}
-	}
 }
 
 func (c *coordinator) detectAndSchedulePartitions() error {
@@ -227,20 +259,20 @@ func (c *coordinator) recordError(err error) {
 	})
 }
 
-func (c *coordinator) initiateShutdown() {
-	c.cancel(errGracefulShutdown)
-}
-
 // shutdown gracefully shuts down the coordinator.
-// It stops accepting new partitions and waits for in-flight records to complete.
+// It signals Subscribe to return ErrShutdown immediately, then waits for
+// in-flight records to complete (drain).
 func (c *coordinator) shutdown(ctx context.Context) error {
-	c.cancel(errGracefulShutdown)
+	c.shutdownOnce.Do(func() {
+		c.shutdownFlag.Store(true)
+		close(c.shutdownCh)
+		c.cancel(errGracefulShutdown)
+	})
 
 	select {
-	case <-c.done:
+	case <-c.allReadersDone:
 		return nil
 	case <-ctx.Done():
-		c.recordError(ErrShutdownAborted)
 		return ctx.Err()
 	}
 }
@@ -248,15 +280,18 @@ func (c *coordinator) shutdown(ctx context.Context) error {
 // close immediately closes the coordinator.
 // It does not wait for in-flight records to complete.
 func (c *coordinator) close() error {
-	c.cancel(ErrSubscriberClosed)
+	c.closeOnce.Do(func() {
+		c.closedFlag.Store(true)
+		c.cancel(ErrClosed)
 
-	// Force close all readers to break out of drainInflight.
-	c.mu.RLock()
-	for _, reader := range c.readers {
-		reader.Close()
-	}
-	c.mu.RUnlock()
+		// Force close all readers to break out of drainInflight.
+		c.mu.RLock()
+		for _, reader := range c.readers {
+			reader.Close()
+		}
+		c.mu.RUnlock()
+	})
 
-	<-c.done
+	<-c.allReadersDone
 	return nil
 }

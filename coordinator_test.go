@@ -83,8 +83,8 @@ func (m *mockPartitionStorage) UpdateWatermark(ctx context.Context, partitionTok
 	return nil
 }
 
-func TestCoordinator_ShutdownAborted(t *testing.T) {
-	t.Run("shutdown timeout returns ErrShutdownAborted from Subscribe", func(t *testing.T) {
+func TestCoordinator_Shutdown(t *testing.T) {
+	t.Run("shutdown causes Subscribe to return ErrShutdown immediately", func(t *testing.T) {
 		storage := &mockPartitionStorage{
 			// Return a partition to keep the coordinator running.
 			getUnfinishedMinWatermarkPartitionFunc: func(ctx context.Context) (*PartitionMetadata, error) {
@@ -121,26 +121,250 @@ func TestCoordinator_ShutdownAborted(t *testing.T) {
 		// Wait for coordinator to start.
 		time.Sleep(50 * time.Millisecond)
 
-		// Call shutdown with an already-canceled context to simulate timeout.
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
+		// Call shutdown. Subscribe should return ErrShutdown immediately.
+		go func() {
+			ctx := context.Background()
+			c.shutdown(ctx)
+		}()
 
-		shutdownErr := c.shutdown(ctx)
-		if !errors.Is(shutdownErr, context.Canceled) {
-			t.Errorf("shutdown() should return context.Canceled, got: %v", shutdownErr)
-		}
-
-		// Close to stop the coordinator.
-		_ = c.close()
-
-		// run() should return ErrShutdownAborted.
-		runErr := <-runDone
-		if !errors.Is(runErr, ErrShutdownAborted) {
-			t.Errorf("run() should return ErrShutdownAborted, got: %v", runErr)
+		// run() should return ErrShutdown immediately.
+		select {
+		case runErr := <-runDone:
+			if !errors.Is(runErr, ErrShutdown) {
+				t.Errorf("run() should return ErrShutdown, got: %v", runErr)
+			}
+		case <-time.After(500 * time.Millisecond):
+			t.Error("run() should return immediately after shutdown")
 		}
 	})
 
-	t.Run("existing error takes precedence over ErrShutdownAborted", func(t *testing.T) {
+	t.Run("shutdown waits for drain completion", func(t *testing.T) {
+		storage := &mockPartitionStorage{
+			getUnfinishedMinWatermarkPartitionFunc: func(ctx context.Context) (*PartitionMetadata, error) {
+				return &PartitionMetadata{
+					PartitionToken: "test-partition",
+					Watermark:      time.Now(),
+				}, nil
+			},
+			getSchedulablePartitionsFunc: func(ctx context.Context, minWatermark time.Time) ([]*PartitionMetadata, error) {
+				return nil, nil
+			},
+		}
+
+		cfg := newConfig()
+		cfg.partitionDiscoveryInterval = 100 * time.Millisecond
+
+		c := newCoordinator(
+			nil,
+			"test-stream",
+			storage,
+			ConsumerFunc(func(ctx context.Context, record *DataChangeRecord) error {
+				return nil
+			}),
+			cfg,
+		)
+
+		// Run coordinator in a goroutine.
+		go func() {
+			c.run()
+		}()
+
+		// Wait for coordinator to start.
+		time.Sleep(50 * time.Millisecond)
+
+		// Shutdown should return nil when drain completes (no readers to drain).
+		shutdownDone := make(chan error, 1)
+		go func() {
+			shutdownDone <- c.shutdown(context.Background())
+		}()
+
+		select {
+		case err := <-shutdownDone:
+			if err != nil {
+				t.Errorf("shutdown() should return nil, got: %v", err)
+			}
+		case <-time.After(500 * time.Millisecond):
+			t.Error("shutdown() should complete when drain finishes")
+		}
+	})
+
+	t.Run("shutdown timeout returns ctx.Err()", func(t *testing.T) {
+		// Test shutdown timeout behavior directly without run().
+		// This tests that shutdown returns ctx.Err() when drain doesn't complete in time.
+		coordinatorCtx, coordinatorCancel := context.WithCancelCause(context.Background())
+		defer coordinatorCancel(nil)
+
+		c := &coordinator{
+			ctx:            coordinatorCtx,
+			cancel:         coordinatorCancel,
+			shutdownCh:     make(chan struct{}),
+			allReadersDone: make(chan struct{}),
+		}
+
+		// Simulate an in-flight reader that never finishes.
+		// (allReadersDone is never closed)
+
+		// Call shutdown with a very short timeout context.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		defer cancel()
+
+		shutdownErr := c.shutdown(ctx)
+		if !errors.Is(shutdownErr, context.DeadlineExceeded) {
+			t.Errorf("shutdown() should return context.DeadlineExceeded, got: %v", shutdownErr)
+		}
+
+		// Verify shutdown state.
+		if !c.shutdownFlag.Load() {
+			t.Error("shutdownFlag should be true after shutdown()")
+		}
+	})
+}
+
+func TestCoordinator_Close(t *testing.T) {
+	t.Run("close causes Subscribe to return ErrClosed", func(t *testing.T) {
+		storage := &mockPartitionStorage{
+			getUnfinishedMinWatermarkPartitionFunc: func(ctx context.Context) (*PartitionMetadata, error) {
+				return &PartitionMetadata{
+					PartitionToken: "test-partition",
+					Watermark:      time.Now(),
+				}, nil
+			},
+			getSchedulablePartitionsFunc: func(ctx context.Context, minWatermark time.Time) ([]*PartitionMetadata, error) {
+				return nil, nil
+			},
+		}
+
+		cfg := newConfig()
+		cfg.partitionDiscoveryInterval = 100 * time.Millisecond
+
+		c := newCoordinator(
+			nil,
+			"test-stream",
+			storage,
+			ConsumerFunc(func(ctx context.Context, record *DataChangeRecord) error {
+				return nil
+			}),
+			cfg,
+		)
+
+		// Run coordinator in a goroutine.
+		runDone := make(chan error, 1)
+		go func() {
+			runDone <- c.run()
+		}()
+
+		// Wait for coordinator to start.
+		time.Sleep(50 * time.Millisecond)
+
+		// Close the coordinator.
+		c.close()
+
+		// run() should return ErrClosed.
+		runErr := <-runDone
+		if !errors.Is(runErr, ErrClosed) {
+			t.Errorf("run() should return ErrClosed, got: %v", runErr)
+		}
+	})
+
+	t.Run("close called before shutdown completes returns ErrClosed", func(t *testing.T) {
+		storage := &mockPartitionStorage{
+			getUnfinishedMinWatermarkPartitionFunc: func(ctx context.Context) (*PartitionMetadata, error) {
+				return &PartitionMetadata{
+					PartitionToken: "test-partition",
+					Watermark:      time.Now(),
+				}, nil
+			},
+			getSchedulablePartitionsFunc: func(ctx context.Context, minWatermark time.Time) ([]*PartitionMetadata, error) {
+				return nil, nil
+			},
+		}
+
+		cfg := newConfig()
+		cfg.partitionDiscoveryInterval = 100 * time.Millisecond
+
+		c := newCoordinator(
+			nil,
+			"test-stream",
+			storage,
+			ConsumerFunc(func(ctx context.Context, record *DataChangeRecord) error {
+				return nil
+			}),
+			cfg,
+		)
+
+		// Run coordinator in a goroutine.
+		runDone := make(chan error, 1)
+		go func() {
+			runDone <- c.run()
+		}()
+
+		// Wait for coordinator to start.
+		time.Sleep(50 * time.Millisecond)
+
+		// Call close directly (which sets closedFlag and cancels context).
+		// This should cause run() to return ErrClosed.
+		c.close()
+
+		runErr := <-runDone
+		if !errors.Is(runErr, ErrClosed) {
+			t.Errorf("run() should return ErrClosed, got: %v", runErr)
+		}
+	})
+
+	t.Run("close takes precedence when both flags are set", func(t *testing.T) {
+		// Test exitError priority directly
+		c := &coordinator{}
+		c.shutdownFlag.Store(true)
+		c.closedFlag.Store(true)
+
+		err := c.exitError()
+		if !errors.Is(err, ErrClosed) {
+			t.Errorf("exitError() should return ErrClosed when both flags are set, got: %v", err)
+		}
+	})
+}
+
+func TestCoordinator_AllPartitionsFinished(t *testing.T) {
+	t.Run("all partitions finished returns nil from Subscribe", func(t *testing.T) {
+		callCount := 0
+		storage := &mockPartitionStorage{
+			getUnfinishedMinWatermarkPartitionFunc: func(ctx context.Context) (*PartitionMetadata, error) {
+				callCount++
+				if callCount == 1 {
+					// Return a partition on first call (initialize).
+					return &PartitionMetadata{
+						PartitionToken: "test-partition",
+						Watermark:      time.Now(),
+					}, nil
+				}
+				// Return nil on subsequent calls (detectAndSchedulePartitions) to trigger all partitions finished.
+				return nil, nil
+			},
+		}
+
+		cfg := newConfig()
+		cfg.partitionDiscoveryInterval = 50 * time.Millisecond
+
+		c := newCoordinator(
+			nil,
+			"test-stream",
+			storage,
+			ConsumerFunc(func(ctx context.Context, record *DataChangeRecord) error {
+				return nil
+			}),
+			cfg,
+		)
+
+		// run() should return nil when all partitions finish.
+		runErr := c.run()
+		if runErr != nil {
+			t.Errorf("run() should return nil, got: %v", runErr)
+		}
+	})
+}
+
+func TestCoordinator_ExistingError(t *testing.T) {
+	t.Run("existing error takes precedence", func(t *testing.T) {
 		existingErr := errors.New("existing error")
 
 		storage := &mockPartitionStorage{
@@ -166,43 +390,6 @@ func TestCoordinator_ShutdownAborted(t *testing.T) {
 		runErr := c.run()
 		if !errors.Is(runErr, existingErr) {
 			t.Errorf("run() should return existing error, got: %v", runErr)
-		}
-	})
-
-	t.Run("successful shutdown returns nil from Subscribe", func(t *testing.T) {
-		callCount := 0
-		storage := &mockPartitionStorage{
-			getUnfinishedMinWatermarkPartitionFunc: func(ctx context.Context) (*PartitionMetadata, error) {
-				callCount++
-				if callCount == 1 {
-					// Return a partition on first call (initialize).
-					return &PartitionMetadata{
-						PartitionToken: "test-partition",
-						Watermark:      time.Now(),
-					}, nil
-				}
-				// Return nil on subsequent calls (detectAndSchedulePartitions) to trigger graceful shutdown.
-				return nil, nil
-			},
-		}
-
-		cfg := newConfig()
-		cfg.partitionDiscoveryInterval = 50 * time.Millisecond
-
-		c := newCoordinator(
-			nil,
-			"test-stream",
-			storage,
-			ConsumerFunc(func(ctx context.Context, record *DataChangeRecord) error {
-				return nil
-			}),
-			cfg,
-		)
-
-		// run() should return nil when all partitions finish.
-		runErr := c.run()
-		if runErr != nil {
-			t.Errorf("run() should return nil, got: %v", runErr)
 		}
 	})
 }

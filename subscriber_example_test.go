@@ -50,7 +50,7 @@ func ExampleNewSubscriber() {
 		subscriber.Close()
 	}
 
-	if err := <-done; err != nil && !errors.Is(err, spream.ErrSubscriberClosed) {
+	if err := <-done; err != nil && !errors.Is(err, spream.ErrShutdown) {
 		panic(err)
 	}
 }
