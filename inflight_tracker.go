@@ -28,7 +28,6 @@ type inflightTracker struct {
 
 	// Continuous ack tracking.
 	lastContinuousAcked int64
-	safeWatermark       time.Time
 
 	// Event notification channels (separated for normal and error cases).
 	watermarks chan time.Time
@@ -177,10 +176,7 @@ func (t *inflightTracker) advanceWatermark() time.Time {
 			break
 		}
 
-		if rec.timestamp.After(t.safeWatermark) {
-			t.safeWatermark = rec.timestamp
-			watermark = t.safeWatermark
-		}
+		watermark = rec.timestamp
 
 		t.lastContinuousAcked = nextExpected
 		delete(t.pending, nextExpected)
@@ -207,14 +203,6 @@ func (t *inflightTracker) drain() {
 	t.mu.Unlock()
 
 	<-t.done
-}
-
-// getSafeWatermark returns the continuously acked watermark.
-func (t *inflightTracker) getSafeWatermark() time.Time {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	return t.safeWatermark
 }
 
 // close closes the tracker.
