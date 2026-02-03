@@ -5,16 +5,24 @@
 
 Cloud Spanner Change Streams Subscriber for Go
 
-### Sypnosis
+## Synopsis
 
 This library is an implementation to subscribe a change stream's records of Google Cloud Spanner in Go.
 It is heavily inspired by the SpannerIO connector of the [Apache Beam SDK](https://github.com/apache/beam) and is compatible with the PartitionMetadata data model.
 
-### Motivation
+## Motivation
 
 To read a change streams, Google Cloud offers [Dataflow connector](https://cloud.google.com/spanner/docs/change-streams/use-dataflow) as a scalable and reliable solution, but in some cases the abstraction and capabilities of Dataflow pipelines can be too much (or is simply too expensive).
 For more flexibility, use the change stream API directly, but it is a bit complex.
 This library aims to make reading change streams more flexible and casual, while maintaining an easily transition to the use of Dataflow connectors as needed.
+
+For design philosophy and key decisions, see [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Installation
+
+```console
+$ go get github.com/toga4/spream
+```
 
 ## Example Usage
 
