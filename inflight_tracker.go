@@ -13,6 +13,10 @@ import (
 type inflightTracker struct {
 	mu sync.Mutex
 
+	// sendMu synchronizes channel sends and close operations.
+	// Senders use RLock (concurrent), close uses Lock (exclusive).
+	sendMu sync.RWMutex
+
 	// Semaphore for backpressure control.
 	sem *semaphore.Weighted
 
@@ -113,11 +117,16 @@ func (t *inflightTracker) complete(seq int64, err error) {
 	t.mu.Unlock()
 
 	// Send to channel after releasing mutex (prevents deadlock).
-	if err != nil {
-		t.errors <- err
-	} else if !newWatermark.IsZero() {
-		t.watermarks <- newWatermark
+	// Use sendMu to synchronize with close().
+	t.sendMu.RLock()
+	if !t.closed.Load() {
+		if err != nil {
+			t.errors <- err
+		} else if !newWatermark.IsZero() {
+			t.watermarks <- newWatermark
+		}
 	}
+	t.sendMu.RUnlock()
 }
 
 // ackImmediate is for records that ack immediately (HeartbeatRecord, ChildPartitionsRecord).
@@ -138,9 +147,12 @@ func (t *inflightTracker) ackImmediate(timestamp time.Time) {
 
 	t.mu.Unlock()
 
-	if !newWatermark.IsZero() {
+	// Use sendMu to synchronize with close().
+	t.sendMu.RLock()
+	if !t.closed.Load() && !newWatermark.IsZero() {
 		t.watermarks <- newWatermark
 	}
+	t.sendMu.RUnlock()
 }
 
 // advanceWatermark calculates continuous ack and advances the watermark.
@@ -199,6 +211,10 @@ func (t *inflightTracker) getSafeWatermark() time.Time {
 // close closes the tracker.
 // This method is idempotent; calling it multiple times is safe.
 func (t *inflightTracker) close() {
+	// Use sendMu to ensure no goroutine is sending to channels.
+	t.sendMu.Lock()
+	defer t.sendMu.Unlock()
+
 	if t.closed.Swap(true) {
 		return // Already closed.
 	}
