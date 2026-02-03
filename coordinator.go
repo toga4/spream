@@ -27,22 +27,15 @@ type coordinator struct {
 	// Control.
 	ctx      context.Context
 	cancel   context.CancelCauseFunc
-	readerWg asyncWaitGroup
-
-	// Shutdown notification.
-	shutdownCh chan struct{} // closed when shutdown() is called
+	readerWg *asyncWaitGroup
 
 	// Shutdown/close state.
 	shutdownFlag atomic.Bool
 	closedFlag   atomic.Bool
-	shutdownOnce sync.Once
-	closeOnce    sync.Once
 
 	// Error handling.
-	// spream has two error propagation paths: the err field and context.Cause.
-	// cancel(err) sets the cause only on the first call.
-	// If shutdown() calls cancel() first, subsequent errors won't be reflected
-	// in the cause. Therefore, we record errors separately via err + errOnce.
+	// err records the first error from fail() and is returned by run()
+	// unless close() was called (which returns ErrClosed).
 	err     error
 	errOnce sync.Once
 }
@@ -54,6 +47,7 @@ func newCoordinator(
 	consumer Consumer,
 	cfg *config,
 ) *coordinator {
+	ctx, cancel := context.WithCancelCause(context.Background())
 	return &coordinator{
 		spannerClient:    spannerClient,
 		streamName:       streamName,
@@ -61,12 +55,13 @@ func newCoordinator(
 		consumer:         consumer,
 		config:           cfg,
 		readers:          make(map[string]*partitionReader),
-		shutdownCh:       make(chan struct{}),
+		ctx:              ctx,
+		cancel:           cancel,
+		readerWg:         newAsyncWaitGroup(),
 	}
 }
 
 func (c *coordinator) run() error {
-	c.ctx, c.cancel = context.WithCancelCause(context.Background())
 	defer c.cancel(nil)
 
 	// 1. Initialize.
@@ -94,9 +89,6 @@ func (c *coordinator) runMainLoop() {
 
 	for {
 		select {
-		case <-c.shutdownCh:
-			return
-
 		case <-c.ctx.Done():
 			return
 
@@ -118,16 +110,18 @@ func (c *coordinator) runMainLoop() {
 }
 
 // exitError determines the return value based on shutdown/close state and errors.
-// Priority: Close > Shutdown > Error > nil (normal completion).
+// Priority: Close > Error > Shutdown > nil (normal completion).
+// Error takes precedence over Shutdown because if an error occurs during
+// graceful shutdown, that error should be reported instead of ErrShutdown.
 func (c *coordinator) exitError() error {
 	if c.closedFlag.Load() {
 		return ErrClosed
 	}
-	if c.shutdownFlag.Load() {
-		return ErrShutdown
-	}
 	if c.err != nil {
 		return c.err
+	}
+	if c.shutdownFlag.Load() {
+		return ErrShutdown
 	}
 	return nil
 }
@@ -238,11 +232,9 @@ func (c *coordinator) fail(err error) {
 // It signals Subscribe to return ErrShutdown immediately, then waits for
 // in-flight records to complete (drain).
 func (c *coordinator) shutdown(ctx context.Context) error {
-	c.shutdownOnce.Do(func() {
-		c.shutdownFlag.Store(true)
-		close(c.shutdownCh)
+	if !c.shutdownFlag.Swap(true) {
 		c.cancel(errGracefulShutdown)
-	})
+	}
 
 	select {
 	case <-c.readerWg.Wait():
@@ -255,8 +247,7 @@ func (c *coordinator) shutdown(ctx context.Context) error {
 // close immediately closes the coordinator.
 // It does not wait for in-flight records to complete.
 func (c *coordinator) close() error {
-	c.closeOnce.Do(func() {
-		c.closedFlag.Store(true)
+	if !c.closedFlag.Swap(true) {
 		c.cancel(ErrClosed)
 
 		// Force close all readers to break out of drainInflight.
@@ -265,7 +256,7 @@ func (c *coordinator) close() error {
 			reader.Close()
 		}
 		c.mu.RUnlock()
-	})
+	}
 
 	<-c.readerWg.Wait()
 	return nil

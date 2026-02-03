@@ -195,9 +195,9 @@ func TestCoordinator_Shutdown(t *testing.T) {
 		defer coordinatorCancel(nil)
 
 		c := &coordinator{
-			ctx:        coordinatorCtx,
-			cancel:     coordinatorCancel,
-			shutdownCh: make(chan struct{}),
+			ctx:      coordinatorCtx,
+			cancel:   coordinatorCancel,
+			readerWg: newAsyncWaitGroup(),
 		}
 
 		// Simulate an in-flight reader that takes longer than the shutdown timeout.
@@ -327,6 +327,74 @@ func TestCoordinator_Close(t *testing.T) {
 			t.Errorf("exitError() should return ErrClosed when both flags are set, got: %v", err)
 		}
 	})
+}
+
+func TestCoordinator_exitError(t *testing.T) {
+	testErr := errors.New("test error")
+
+	tests := []struct {
+		name         string
+		closedFlag   bool
+		shutdownFlag bool
+		err          error
+		want         error
+	}{
+		{
+			name: "no flags and no error returns nil",
+			want: nil,
+		},
+		{
+			name:         "shutdown only returns ErrShutdown",
+			shutdownFlag: true,
+			want:         ErrShutdown,
+		},
+		{
+			name:       "close only returns ErrClosed",
+			closedFlag: true,
+			want:       ErrClosed,
+		},
+		{
+			name: "error only returns that error",
+			err:  testErr,
+			want: testErr,
+		},
+		{
+			name:         "error takes precedence over shutdown",
+			shutdownFlag: true,
+			err:          testErr,
+			want:         testErr,
+		},
+		{
+			name:       "close takes precedence over error",
+			closedFlag: true,
+			err:        testErr,
+			want:       ErrClosed,
+		},
+		{
+			name:         "close takes precedence over shutdown and error",
+			closedFlag:   true,
+			shutdownFlag: true,
+			err:          testErr,
+			want:         ErrClosed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &coordinator{err: tt.err}
+			if tt.closedFlag {
+				c.closedFlag.Store(true)
+			}
+			if tt.shutdownFlag {
+				c.shutdownFlag.Store(true)
+			}
+
+			got := c.exitError()
+			if !errors.Is(got, tt.want) {
+				t.Errorf("exitError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestCoordinator_AllPartitionsFinished(t *testing.T) {
