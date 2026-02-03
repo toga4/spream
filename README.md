@@ -112,6 +112,12 @@ Waiting changes...
 {"commit_timestamp":"2023-01-08T05:47:59.117807Z","record_sequence":"00000000","server_transaction_id":"ODkwNDMzNDgxMDU2NzAwMDM2MA==","is_last_record_in_transaction_in_partition":true,"table_name":"Singers","column_types":[{"name":"SingerId","type":{"code":"INT64"},"is_primary_key":true,"ordinal_position":1},{"name":"Name","type":{"code":"STRING"},"ordinal_position":2}],"mods":[{"keys":{"SingerId":"1"},"old_values":{"Name":"bar"}}],"mod_type":"DELETE","value_capture_type":"OLD_AND_NEW_VALUES","number_of_records_in_transaction":1,"number_of_partitions_in_transaction":1,"transaction_tag":"","is_system_transaction":false}
 ```
 
+## Limitations
+
+- **Single process only**: spream does not support distributed coordination. For scale-out, consider [Dataflow connector](https://cloud.google.com/spanner/docs/change-streams/use-dataflow). The shared PartitionMetadata schema enables migration.
+- **At-least-once delivery**: Records may be delivered multiple times on crash recovery or network issues. Exactly-once is not guaranteed; consumers must handle duplicates if needed.
+- **Ordering**: Records within a partition are delivered in commit timestamp order. Across partitions, no ordering is guaranteed.
+
 ## Credits
 
 Heavily inspired by below projects.
