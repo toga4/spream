@@ -8,7 +8,6 @@ import (
 	"cloud.google.com/go/spanner"
 	database "cloud.google.com/go/spanner/admin/database/apiv1"
 	"cloud.google.com/go/spanner/admin/database/apiv1/databasepb"
-	"cloud.google.com/go/spanner/apiv1/spannerpb"
 	"github.com/toga4/spream"
 	"google.golang.org/api/iterator"
 	"google.golang.org/grpc/codes"
@@ -16,43 +15,15 @@ import (
 
 // SpannerPartitionStorage implements PartitionStorage that stores PartitionMetadata in Cloud Spanner.
 type SpannerPartitionStorage struct {
-	client          *spanner.Client
-	tableName       string
-	requestPriority spannerpb.RequestOptions_Priority
-}
-
-type spannerConfig struct {
-	requestPriority spannerpb.RequestOptions_Priority
-}
-
-type spannerOption interface {
-	Apply(*spannerConfig)
-}
-
-type withRequestPriority spannerpb.RequestOptions_Priority
-
-func (o withRequestPriority) Apply(c *spannerConfig) {
-	c.requestPriority = spannerpb.RequestOptions_Priority(o)
-}
-
-// WithRequestPriority set the priority option for spanner requests.
-//
-// Default value is unspecified, equivalent to high.
-func WithRequestPriority(priority spannerpb.RequestOptions_Priority) spannerOption {
-	return withRequestPriority(priority)
+	client    *spanner.Client
+	tableName string
 }
 
 // NewSpanner creates a new instance of SpannerPartitionStorage.
-func NewSpanner(client *spanner.Client, tableName string, options ...spannerOption) *SpannerPartitionStorage {
-	c := &spannerConfig{}
-	for _, o := range options {
-		o.Apply(c)
-	}
-
+func NewSpanner(client *spanner.Client, tableName string) *SpannerPartitionStorage {
 	return &SpannerPartitionStorage{
-		client:          client,
-		tableName:       tableName,
-		requestPriority: c.requestPriority,
+		client:    client,
+		tableName: tableName,
 	}
 }
 
@@ -132,7 +103,7 @@ func (s *SpannerPartitionStorage) GetUnfinishedMinWatermarkPartition(ctx context
 		},
 	}
 
-	iter := s.client.Single().QueryWithOptions(ctx, stmt, spanner.QueryOptions{Priority: s.requestPriority})
+	iter := s.client.Single().Query(ctx, stmt)
 	defer iter.Stop()
 
 	r, err := iter.Next()
@@ -161,7 +132,7 @@ func (s *SpannerPartitionStorage) GetInterruptedPartitions(ctx context.Context) 
 		},
 	}
 
-	iter := s.client.Single().QueryWithOptions(ctx, stmt, spanner.QueryOptions{Priority: s.requestPriority})
+	iter := s.client.Single().Query(ctx, stmt)
 
 	partitions := []*spream.PartitionMetadata{}
 	if err := iter.Do(func(r *spanner.Row) error {
@@ -193,7 +164,7 @@ func (s *SpannerPartitionStorage) InitializeRootPartition(ctx context.Context, s
 		columnFinishedAt:      nil,
 	})
 
-	_, err := s.client.Apply(ctx, []*spanner.Mutation{m}, spanner.Priority(s.requestPriority))
+	_, err := s.client.Apply(ctx, []*spanner.Mutation{m})
 	return err
 }
 
@@ -206,7 +177,7 @@ func (s *SpannerPartitionStorage) GetSchedulablePartitions(ctx context.Context, 
 		},
 	}
 
-	iter := s.client.Single().QueryWithOptions(ctx, stmt, spanner.QueryOptions{Priority: s.requestPriority})
+	iter := s.client.Single().Query(ctx, stmt)
 
 	partitions := []*spream.PartitionMetadata{}
 	if err := iter.Do(func(r *spanner.Row) error {
@@ -236,7 +207,7 @@ func (s *SpannerPartitionStorage) AddChildPartitions(ctx context.Context, endTim
 			columnCreatedAt:       spanner.CommitTimestamp,
 		})
 
-		if _, err := s.client.Apply(ctx, []*spanner.Mutation{m}, spanner.Priority(s.requestPriority)); err != nil {
+		if _, err := s.client.Apply(ctx, []*spanner.Mutation{m}); err != nil {
 			// Ignore the AlreadyExists error because a child partition can be found multiple times if partitions are merged.
 			if spanner.ErrCode(err) == codes.AlreadyExists {
 				continue
@@ -259,7 +230,7 @@ func (s *SpannerPartitionStorage) UpdateToScheduled(ctx context.Context, partiti
 		mutations = append(mutations, m)
 	}
 
-	_, err := s.client.Apply(ctx, mutations, spanner.Priority(s.requestPriority))
+	_, err := s.client.Apply(ctx, mutations)
 	return err
 }
 
@@ -270,7 +241,7 @@ func (s *SpannerPartitionStorage) UpdateToRunning(ctx context.Context, partition
 		columnRunningAt:      spanner.CommitTimestamp,
 	})
 
-	_, err := s.client.Apply(ctx, []*spanner.Mutation{m}, spanner.Priority(s.requestPriority))
+	_, err := s.client.Apply(ctx, []*spanner.Mutation{m})
 	return err
 }
 
@@ -281,7 +252,7 @@ func (s *SpannerPartitionStorage) UpdateToFinished(ctx context.Context, partitio
 		columnFinishedAt:     spanner.CommitTimestamp,
 	})
 
-	_, err := s.client.Apply(ctx, []*spanner.Mutation{m}, spanner.Priority(s.requestPriority))
+	_, err := s.client.Apply(ctx, []*spanner.Mutation{m})
 	return err
 }
 
@@ -291,6 +262,6 @@ func (s *SpannerPartitionStorage) UpdateWatermark(ctx context.Context, partition
 		columnWatermark:      watermark,
 	})
 
-	_, err := s.client.Apply(ctx, []*spanner.Mutation{m}, spanner.Priority(s.requestPriority))
+	_, err := s.client.Apply(ctx, []*spanner.Mutation{m})
 	return err
 }

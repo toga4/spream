@@ -148,6 +148,9 @@ client, _ := spanner.NewClientWithConfig(ctx, database, spanner.ClientConfig{
     QueryOptions: spanner.QueryOptions{
         Priority: spannerpb.RequestOptions_PRIORITY_LOW,
     },
+    ApplyOptions: []spanner.ApplyOption{
+        spanner.Priority(spannerpb.RequestOptions_PRIORITY_LOW),
+    },
 })
 subscriber, _ := spream.NewSubscriber(&spream.Config{
     SpannerClient:    client,
@@ -157,26 +160,26 @@ subscriber, _ := spream.NewSubscriber(&spream.Config{
 })
 ```
 
-This approach applies the priority to all queries made by the client, which is generally the desired behavior.
+This approach applies the priority to all operations made by the client:
+- `QueryOptions` applies to read operations (change stream queries, partition metadata queries)
+- `ApplyOptions` applies to write operations (partition metadata updates)
 
 ### SpannerPartitionStorage Options
+
+The `WithRequestPriority` option (and the typo `WithRequestPriotiry`) has been removed. Configure the priority at the `spanner.Client` level using `NewClientWithConfig`, as shown above.
 
 **Before (v0.2.x):**
 ```go
 storage := partitionstorage.NewSpanner(
     client,
     "TableName",
-    partitionstorage.WithRequestPriotiry(spannerpb.RequestOptions_PRIORITY_LOW), // Note: typo
+    partitionstorage.WithRequestPriotiry(spannerpb.RequestOptions_PRIORITY_LOW),
 )
 ```
 
 **After (v0.3.0):**
 ```go
-storage := partitionstorage.NewSpanner(
-    client,
-    "TableName",
-    partitionstorage.WithRequestPriority(spannerpb.RequestOptions_PRIORITY_LOW), // Typo fixed
-)
+storage := partitionstorage.NewSpanner(client, "TableName")
 ```
 
 ### PartitionStorage Interface (Custom Implementations Only)
