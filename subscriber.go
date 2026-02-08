@@ -143,7 +143,6 @@ type PartitionStorage interface {
 // NewSubscriber creates a new subscriber of change streams.
 // It validates the configuration and applies default values for optional fields.
 func NewSubscriber(cfg *Config) (*Subscriber, error) {
-	// Validation.
 	if cfg == nil {
 		return nil, errors.New("spream: config is required")
 	}
@@ -160,7 +159,6 @@ func NewSubscriber(cfg *Config) (*Subscriber, error) {
 		return nil, errors.New("spream: Consumer is required")
 	}
 
-	// Apply default values.
 	startTimestamp := cfg.StartTimestamp
 	if startTimestamp.IsZero() {
 		startTimestamp = nowFunc()
@@ -188,7 +186,6 @@ func NewSubscriber(cfg *Config) (*Subscriber, error) {
 
 	ctx, cancel := context.WithCancelCause(baseContext)
 	return &Subscriber{
-		// Configuration (immutable).
 		spannerClient:              cfg.SpannerClient,
 		streamName:                 cfg.StreamName,
 		partitionStorage:           cfg.PartitionStorage,
@@ -215,24 +212,21 @@ func NewSubscriber(cfg *Config) (*Subscriber, error) {
 //
 // Subscribe can only be called once. Subsequent calls return an error.
 func (s *Subscriber) Subscribe() error {
-	// Prevent multiple calls.
+	// Subscriber is single-use; reject concurrent or repeated calls.
 	if s.started.Swap(true) {
 		return errors.New("spream: subscriber already started")
 	}
 
 	defer s.cancel(nil)
 
-	// 1. Initialize.
 	if err := s.initialize(); err != nil {
 		return fmt.Errorf("initialize: %w", err)
 	}
 
-	// 2. Resume interrupted partitions.
 	if err := s.resumeInterruptedPartitions(); err != nil {
 		return fmt.Errorf("resume interrupted partitions: %w", err)
 	}
 
-	// 3. Main loop: partition detection and shutdown handling.
 	s.runMainLoop()
 
 	return s.exitError()
@@ -396,7 +390,7 @@ func (s *Subscriber) startPartitionReader(partition *PartitionMetadata) {
 	s.readersMu.Lock()
 	defer s.readersMu.Unlock()
 
-	// Skip if reader already exists.
+	// A partition may appear in multiple discovery cycles; skip to prevent duplicate reads.
 	if _, exists := s.readers[partition.PartitionToken]; exists {
 		return
 	}

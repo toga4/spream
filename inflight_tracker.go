@@ -41,7 +41,7 @@ type inflightTracker struct {
 	// When draining=true and uncommitted is empty, done is closed.
 	draining atomic.Bool
 
-	// For waitAllCompleted.
+	// Drain signaling: closeDone closes done when all in-flight records complete.
 	done      chan struct{}
 	closeDone func()
 }
@@ -62,7 +62,7 @@ func newInflightTracker(maxInflight int) *inflightTracker {
 		errors:              make(chan error, maxInflight),
 		done:                make(chan struct{}),
 	}
-	// sync.OnceFunc creates a function that executes close(t.done) only once.
+	// closeDone may be called from multiple code paths; OnceFunc prevents double-close panic on the channel.
 	t.closeDone = sync.OnceFunc(func() { close(t.done) })
 	return t
 }
@@ -193,7 +193,7 @@ func (t *inflightTracker) advanceWatermark() time.Time {
 		delete(t.uncommitted, nextExpected)
 	}
 
-	// Close done if pending becomes 0 during shutdown phase.
+	// Signal drain completion when the last in-flight record finishes.
 	if t.draining.Load() && len(t.uncommitted) == 0 {
 		t.closeDone()
 	}
@@ -206,7 +206,7 @@ func (t *inflightTracker) advanceWatermark() time.Time {
 func (t *inflightTracker) drain() {
 	t.draining.Store(true)
 
-	// Close done immediately if pending is already 0.
+	// All records may already be completed before drain; signal completion immediately in that case.
 	t.mu.Lock()
 	if len(t.uncommitted) == 0 {
 		t.closeDone()

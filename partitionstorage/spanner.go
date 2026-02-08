@@ -58,7 +58,6 @@ func (s *SpannerPartitionStorage) GetUnfinishedMinWatermarkPartition(ctx context
 	case iterator.Done:
 		return nil, nil
 	case nil:
-		// break
 	default:
 		return nil, err
 	}

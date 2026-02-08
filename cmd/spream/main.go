@@ -198,13 +198,13 @@ func main() {
 
 	fmt.Fprintln(os.Stderr, "Waiting changes...")
 
-	// Start subscribing in a separate goroutine.
+	// Subscribe blocks until completion; run concurrently to allow signal handling below.
 	done := make(chan error)
 	go func() {
 		done <- subscriber.Subscribe()
 	}()
 
-	// Wait for signal and gracefully shutdown.
+	// On interrupt, attempt graceful shutdown with timeout; force close if it exceeds the deadline.
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

@@ -50,25 +50,21 @@ func newPartitionReader(
 func (r *partitionReader) run(ctx context.Context) error {
 	defer r.tracker.close()
 
-	// Update state to RUNNING.
+	// Mark the partition as actively processing so restarts can detect and resume it.
 	if err := r.partitionStorage.UpdateToRunning(ctx, r.partitionToken); err != nil {
 		return fmt.Errorf("update to running: %w", err)
 	}
 
-	// Manage concurrent processing with errgroup.
 	g, gctx := errgroup.WithContext(ctx)
 
-	// Watermark update processing.
 	g.Go(func() error {
 		return r.processWatermarks(gctx)
 	})
 
-	// Error handling processing.
 	g.Go(func() error {
 		return r.processErrors(gctx)
 	})
 
-	// Change Stream reading.
 	g.Go(func() error {
 		if err := r.readStream(gctx); err != nil {
 			return err
@@ -81,7 +77,6 @@ func (r *partitionReader) run(ctx context.Context) error {
 		return nil
 	})
 
-	// Wait for all goroutines to complete.
 	if err := g.Wait(); err != nil {
 		if errors.Is(context.Cause(ctx), errGracefulShutdown) {
 			r.drainInflight()
@@ -111,7 +106,7 @@ func (r *partitionReader) close() {
 	r.tracker.close()
 }
 
-// processWatermarks processes watermark updates.
+// processWatermarks persists watermark advances to PartitionStorage so restarts can resume from the last committed position.
 func (r *partitionReader) processWatermarks(ctx context.Context) error {
 	for {
 		select {
@@ -128,8 +123,7 @@ func (r *partitionReader) processWatermarks(ctx context.Context) error {
 	}
 }
 
-// processErrors processes errors from Consumer.
-// Any Consumer error stops the subscription immediately.
+// processErrors propagates Consumer errors to stop the partition reader, since the subscription cannot continue safely after a Consumer failure.
 func (r *partitionReader) processErrors(ctx context.Context) error {
 	for {
 		select {
@@ -174,20 +168,16 @@ func (r *partitionReader) buildStatement() spanner.Statement {
 
 func (r *partitionReader) processRecords(ctx context.Context, records []*changeRecord) error {
 	for _, cr := range records {
-		// DataChangeRecord processing.
 		for _, record := range cr.DataChangeRecords {
 			if err := r.processDataChangeRecord(ctx, record); err != nil {
 				return err
 			}
 		}
 
-		// HeartbeatRecord processing.
-		// Allocate sequence and complete immediately to include in continuous ack chain.
 		for _, record := range cr.HeartbeatRecords {
 			r.processHeartbeatRecord(record)
 		}
 
-		// ChildPartitionsRecord processing.
 		for _, record := range cr.ChildPartitionsRecords {
 			if err := r.processChildPartitionsRecord(ctx, record); err != nil {
 				return err
@@ -198,16 +188,16 @@ func (r *partitionReader) processRecords(ctx context.Context, records []*changeR
 }
 
 func (r *partitionReader) processDataChangeRecord(ctx context.Context, record *dataChangeRecord) error {
-	// 1. Acquire semaphore (blocks if MaxInflight reached).
+	// Step 1: Block until an in-flight slot is available to bound concurrent processing.
 	if err := r.tracker.acquire(ctx); err != nil {
 		return err
 	}
 
-	// 2. Register in in-flight.
+	// Step 2: Decode and register before starting the goroutine to preserve read-order sequencing.
 	decoded := record.decodeToNonSpannerType()
 	seq := r.tracker.add(record.CommitTimestamp)
 
-	// 3. Call Consumer in goroutine.
+	// Step 3: Run Consumer concurrently so the stream read loop can continue without blocking.
 	go func() {
 		err := r.consumer.Consume(ctx, decoded)
 		r.tracker.complete(seq, err)
@@ -217,9 +207,8 @@ func (r *partitionReader) processDataChangeRecord(ctx context.Context, record *d
 }
 
 func (r *partitionReader) processHeartbeatRecord(record *HeartbeatRecord) {
-	// HeartbeatRecord doesn't call Consumer, so no goroutine is spawned.
-	// Semaphore (acquire) is not needed. ackImmediate for immediate ack.
-	// This advances watermark even when no DataChangeRecord arrives.
+	// HeartbeatRecord carries no data, so it acks immediately without Consumer or semaphore involvement.
+	// This advances the watermark even during idle periods with no data changes.
 	r.tracker.ackImmediate(record.Timestamp)
 }
 
