@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"cloud.google.com/go/spanner"
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 )
 
 func TestDecodeNullJSONToMap(t *testing.T) {
@@ -31,120 +33,61 @@ func TestDecodeNullJSONToMap(t *testing.T) {
 }
 
 func TestDecodeColumnTypeJSONToType(t *testing.T) {
-	simpleTests := []struct {
-		name string
-		code TypeCode
+	tests := []struct {
+		name  string
+		input map[string]any
+		want  Type
 	}{
-		{"STRING", TypeCode_STRING},
-		{"BOOL", TypeCode_BOOL},
-		{"INT64", TypeCode_INT64},
-		{"FLOAT64", TypeCode_FLOAT64},
-		{"FLOAT32", TypeCode_FLOAT32},
-		{"TIMESTAMP", TypeCode_TIMESTAMP},
-		{"DATE", TypeCode_DATE},
-		{"BYTES", TypeCode_BYTES},
-		{"NUMERIC", TypeCode_NUMERIC},
-		{"JSON", TypeCode_JSON},
-		{"PROTO", TypeCode_PROTO},
-		{"ENUM", TypeCode_ENUM},
-		{"UUID", TypeCode_UUID},
-	}
-
-	for _, tt := range simpleTests {
-		t.Run(tt.name, func(t *testing.T) {
-			j := spanner.NullJSON{
-				Value: map[string]any{"code": string(tt.code)},
-				Valid: true,
-			}
-			got := decodeColumnTypeJSONToType(j)
-			if got.Code != tt.code {
-				t.Errorf("Code = %v, want %v", got.Code, tt.code)
-			}
-			if got.ArrayElementType != nil {
-				t.Errorf("ArrayElementType = %v, want nil", got.ArrayElementType)
-			}
-		})
-	}
-
-	t.Run("array type", func(t *testing.T) {
-		j := spanner.NullJSON{
-			Value: map[string]any{
-				"code":               "ARRAY",
-				"array_element_type": map[string]any{"code": "INT64"},
-			},
-			Valid: true,
-		}
-		got := decodeColumnTypeJSONToType(j)
-		if got.Code != TypeCode_ARRAY {
-			t.Errorf("Code = %v, want %v", got.Code, TypeCode_ARRAY)
-		}
-		if got.ArrayElementType == nil {
-			t.Fatal("ArrayElementType is nil, want non-nil")
-		}
-		if got.ArrayElementType.Code != TypeCode_INT64 {
-			t.Errorf("ArrayElementType.Code = %v, want %v", got.ArrayElementType.Code, TypeCode_INT64)
-		}
-	})
-
-	t.Run("PROTO with proto_type_fqn", func(t *testing.T) {
-		j := spanner.NullJSON{
-			Value: map[string]any{
-				"code":           "PROTO",
-				"proto_type_fqn": "com.example.MyMessage",
-			},
-			Valid: true,
-		}
-		got := decodeColumnTypeJSONToType(j)
-		if got.Code != TypeCode_PROTO {
-			t.Errorf("Code = %v, want %v", got.Code, TypeCode_PROTO)
-		}
-		if got.ProtoTypeFqn != "com.example.MyMessage" {
-			t.Errorf("ProtoTypeFqn = %v, want %q", got.ProtoTypeFqn, "com.example.MyMessage")
-		}
-	})
-
-	t.Run("ENUM with proto_type_fqn", func(t *testing.T) {
-		j := spanner.NullJSON{
-			Value: map[string]any{
-				"code":           "ENUM",
-				"proto_type_fqn": "com.example.MyEnum",
-			},
-			Valid: true,
-		}
-		got := decodeColumnTypeJSONToType(j)
-		if got.Code != TypeCode_ENUM {
-			t.Errorf("Code = %v, want %v", got.Code, TypeCode_ENUM)
-		}
-		if got.ProtoTypeFqn != "com.example.MyEnum" {
-			t.Errorf("ProtoTypeFqn = %v, want %q", got.ProtoTypeFqn, "com.example.MyEnum")
-		}
-	})
-
-	t.Run("ARRAY of PROTO with proto_type_fqn", func(t *testing.T) {
-		j := spanner.NullJSON{
-			Value: map[string]any{
+		{name: "STRING", input: map[string]any{"code": "STRING"}, want: Type{Code: TypeCode_STRING}},
+		{name: "BOOL", input: map[string]any{"code": "BOOL"}, want: Type{Code: TypeCode_BOOL}},
+		{name: "INT64", input: map[string]any{"code": "INT64"}, want: Type{Code: TypeCode_INT64}},
+		{name: "FLOAT64", input: map[string]any{"code": "FLOAT64"}, want: Type{Code: TypeCode_FLOAT64}},
+		{name: "FLOAT32", input: map[string]any{"code": "FLOAT32"}, want: Type{Code: TypeCode_FLOAT32}},
+		{name: "TIMESTAMP", input: map[string]any{"code": "TIMESTAMP"}, want: Type{Code: TypeCode_TIMESTAMP}},
+		{name: "DATE", input: map[string]any{"code": "DATE"}, want: Type{Code: TypeCode_DATE}},
+		{name: "BYTES", input: map[string]any{"code": "BYTES"}, want: Type{Code: TypeCode_BYTES}},
+		{name: "NUMERIC", input: map[string]any{"code": "NUMERIC"}, want: Type{Code: TypeCode_NUMERIC}},
+		{name: "JSON", input: map[string]any{"code": "JSON"}, want: Type{Code: TypeCode_JSON}},
+		{name: "PROTO", input: map[string]any{"code": "PROTO"}, want: Type{Code: TypeCode_PROTO}},
+		{name: "ENUM", input: map[string]any{"code": "ENUM"}, want: Type{Code: TypeCode_ENUM}},
+		{name: "UUID", input: map[string]any{"code": "UUID"}, want: Type{Code: TypeCode_UUID}},
+		{
+			name:  "ARRAY of INT64",
+			input: map[string]any{"code": "ARRAY", "array_element_type": map[string]any{"code": "INT64"}},
+			want:  Type{Code: TypeCode_ARRAY, ArrayElementType: &Type{Code: TypeCode_INT64}},
+		},
+		{
+			name:  "PROTO with proto_type_fqn",
+			input: map[string]any{"code": "PROTO", "proto_type_fqn": "com.example.MyMessage"},
+			want:  Type{Code: TypeCode_PROTO, ProtoTypeFqn: "com.example.MyMessage"},
+		},
+		{
+			name:  "ENUM with proto_type_fqn",
+			input: map[string]any{"code": "ENUM", "proto_type_fqn": "com.example.MyEnum"},
+			want:  Type{Code: TypeCode_ENUM, ProtoTypeFqn: "com.example.MyEnum"},
+		},
+		{
+			name: "ARRAY of PROTO with proto_type_fqn",
+			input: map[string]any{
 				"code": "ARRAY",
 				"array_element_type": map[string]any{
 					"code":           "PROTO",
 					"proto_type_fqn": "com.example.MyMessage",
 				},
 			},
-			Valid: true,
-		}
-		got := decodeColumnTypeJSONToType(j)
-		if got.Code != TypeCode_ARRAY {
-			t.Errorf("Code = %v, want %v", got.Code, TypeCode_ARRAY)
-		}
-		if got.ArrayElementType == nil {
-			t.Fatal("ArrayElementType is nil, want non-nil")
-		}
-		if got.ArrayElementType.Code != TypeCode_PROTO {
-			t.Errorf("ArrayElementType.Code = %v, want %v", got.ArrayElementType.Code, TypeCode_PROTO)
-		}
-		if got.ArrayElementType.ProtoTypeFqn != "com.example.MyMessage" {
-			t.Errorf("ArrayElementType.ProtoTypeFqn = %v, want %q", got.ArrayElementType.ProtoTypeFqn, "com.example.MyMessage")
-		}
-	})
+			want: Type{Code: TypeCode_ARRAY, ArrayElementType: &Type{Code: TypeCode_PROTO, ProtoTypeFqn: "com.example.MyMessage"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			j := spanner.NullJSON{Value: tt.input, Valid: true}
+			got := decodeColumnTypeJSONToType(j)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("decodeColumnTypeJSONToType() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
 }
 
 func TestDataChangeRecord_DecodeToNonSpannerType(t *testing.T) {
@@ -185,86 +128,45 @@ func TestDataChangeRecord_DecodeToNonSpannerType(t *testing.T) {
 		IsSystemTransaction:             false,
 	}
 
+	want := &DataChangeRecord{
+		CommitTimestamp:                      commitTime,
+		RecordSequence:                       "00000001",
+		ServerTransactionID:                  "tx-123",
+		IsLastRecordInTransactionInPartition: true,
+		TableName:                            "Users",
+		ColumnTypes: []*ColumnType{
+			{
+				Name:            "UserID",
+				Type:            Type{Code: TypeCode_STRING},
+				IsPrimaryKey:    true,
+				OrdinalPosition: 1,
+			},
+			{
+				Name:            "Tags",
+				Type:            Type{Code: TypeCode_ARRAY, ArrayElementType: &Type{Code: TypeCode_STRING}},
+				IsPrimaryKey:    false,
+				OrdinalPosition: 2,
+			},
+		},
+		Mods: []*Mod{
+			{
+				Keys:      map[string]any{"UserID": "user-1"},
+				NewValues: map[string]any{"Tags": json.RawMessage(`["tag1","tag2"]`)},
+				OldValues: nil,
+			},
+		},
+		ModType:                         ModType_INSERT,
+		ValueCaptureType:                "OLD_AND_NEW_VALUES",
+		NumberOfRecordsInTransaction:    1,
+		NumberOfPartitionsInTransaction: 1,
+		TransactionTag:                  "app=myapp",
+		IsSystemTransaction:             false,
+	}
+
 	got := record.decodeToNonSpannerType()
 
-	if !got.CommitTimestamp.Equal(commitTime) {
-		t.Errorf("CommitTimestamp = %v, want %v", got.CommitTimestamp, commitTime)
-	}
-	if got.RecordSequence != "00000001" {
-		t.Errorf("RecordSequence = %v, want %q", got.RecordSequence, "00000001")
-	}
-	if got.ServerTransactionID != "tx-123" {
-		t.Errorf("ServerTransactionID = %v, want %q", got.ServerTransactionID, "tx-123")
-	}
-	if !got.IsLastRecordInTransactionInPartition {
-		t.Error("IsLastRecordInTransactionInPartition = false, want true")
-	}
-	if got.TableName != "Users" {
-		t.Errorf("TableName = %v, want %q", got.TableName, "Users")
-	}
-	if got.ModType != ModType_INSERT {
-		t.Errorf("ModType = %v, want %v", got.ModType, ModType_INSERT)
-	}
-	if got.ValueCaptureType != "OLD_AND_NEW_VALUES" {
-		t.Errorf("ValueCaptureType = %v, want %q", got.ValueCaptureType, "OLD_AND_NEW_VALUES")
-	}
-	if got.NumberOfRecordsInTransaction != 1 {
-		t.Errorf("NumberOfRecordsInTransaction = %v, want 1", got.NumberOfRecordsInTransaction)
-	}
-	if got.NumberOfPartitionsInTransaction != 1 {
-		t.Errorf("NumberOfPartitionsInTransaction = %v, want 1", got.NumberOfPartitionsInTransaction)
-	}
-	if got.TransactionTag != "app=myapp" {
-		t.Errorf("TransactionTag = %v, want %q", got.TransactionTag, "app=myapp")
-	}
-	if got.IsSystemTransaction {
-		t.Error("IsSystemTransaction = true, want false")
-	}
-
-	// ColumnTypes の検証
-	if len(got.ColumnTypes) != 2 {
-		t.Fatalf("len(ColumnTypes) = %d, want 2", len(got.ColumnTypes))
-	}
-
-	ct0 := got.ColumnTypes[0]
-	if ct0.Name != "UserID" {
-		t.Errorf("ColumnTypes[0].Name = %v, want %q", ct0.Name, "UserID")
-	}
-	if ct0.Type.Code != TypeCode_STRING {
-		t.Errorf("ColumnTypes[0].Type.Code = %v, want %v", ct0.Type.Code, TypeCode_STRING)
-	}
-	if !ct0.IsPrimaryKey {
-		t.Error("ColumnTypes[0].IsPrimaryKey = false, want true")
-	}
-	if ct0.OrdinalPosition != 1 {
-		t.Errorf("ColumnTypes[0].OrdinalPosition = %v, want 1", ct0.OrdinalPosition)
-	}
-
-	ct1 := got.ColumnTypes[1]
-	if ct1.Type.Code != TypeCode_ARRAY {
-		t.Errorf("ColumnTypes[1].Type.Code = %v, want %v", ct1.Type.Code, TypeCode_ARRAY)
-	}
-	if ct1.Type.ArrayElementType == nil {
-		t.Fatal("ColumnTypes[1].Type.ArrayElementType is nil, want non-nil")
-	}
-	if ct1.Type.ArrayElementType.Code != TypeCode_STRING {
-		t.Errorf("ColumnTypes[1].Type.ArrayElementType.Code = %v, want %v", ct1.Type.ArrayElementType.Code, TypeCode_STRING)
-	}
-
-	// Mods の検証
-	if len(got.Mods) != 1 {
-		t.Fatalf("len(Mods) = %d, want 1", len(got.Mods))
-	}
-
-	m := got.Mods[0]
-	if m.Keys["UserID"] != "user-1" {
-		t.Errorf("Mods[0].Keys[\"UserID\"] = %v, want %q", m.Keys["UserID"], "user-1")
-	}
-	if m.NewValues == nil {
-		t.Error("Mods[0].NewValues = nil, want non-nil")
-	}
-	if m.OldValues != nil {
-		t.Errorf("Mods[0].OldValues = %v, want nil", m.OldValues)
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("decodeToNonSpannerType() mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -276,15 +178,15 @@ func TestDataChangeRecord_DecodeToNonSpannerType_EmptySlices(t *testing.T) {
 		ModType:        "DELETE",
 	}
 
+	want := &DataChangeRecord{
+		ColumnTypes: []*ColumnType{},
+		Mods:        []*Mod{},
+		ModType:     ModType_DELETE,
+	}
+
 	got := record.decodeToNonSpannerType()
 
-	if len(got.ColumnTypes) != 0 {
-		t.Errorf("len(ColumnTypes) = %d, want 0", len(got.ColumnTypes))
-	}
-	if len(got.Mods) != 0 {
-		t.Errorf("len(Mods) = %d, want 0", len(got.Mods))
-	}
-	if got.ModType != ModType_DELETE {
-		t.Errorf("ModType = %v, want %v", got.ModType, ModType_DELETE)
+	if diff := cmp.Diff(want, got, cmpopts.IgnoreFields(DataChangeRecord{}, "CommitTimestamp")); diff != "" {
+		t.Errorf("decodeToNonSpannerType() mismatch (-want +got):\n%s", diff)
 	}
 }

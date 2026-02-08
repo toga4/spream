@@ -5,6 +5,9 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 )
 
 // mockPartitionStorage is a mock implementation of PartitionStorage for testing.
@@ -140,8 +143,8 @@ func TestSubscriber_Shutdown(t *testing.T) {
 		// Subscribe() should return ErrShutdown immediately.
 		select {
 		case runErr := <-runDone:
-			if !errors.Is(runErr, ErrShutdown) {
-				t.Errorf("Subscribe() should return ErrShutdown, got: %v", runErr)
+			if diff := cmp.Diff(ErrShutdown, runErr, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("Subscribe() error mismatch (-want +got):\n%s", diff)
 			}
 		case <-time.After(500 * time.Millisecond):
 			t.Error("Subscribe() should return immediately after shutdown")
@@ -212,8 +215,8 @@ func TestSubscriber_Shutdown(t *testing.T) {
 		defer cancel()
 
 		shutdownErr := s.Shutdown(ctx)
-		if !errors.Is(shutdownErr, context.DeadlineExceeded) {
-			t.Errorf("Shutdown() should return context.DeadlineExceeded, got: %v", shutdownErr)
+		if diff := cmp.Diff(context.DeadlineExceeded, shutdownErr, cmpopts.EquateErrors()); diff != "" {
+			t.Errorf("Shutdown() error mismatch (-want +got):\n%s", diff)
 		}
 
 		// Verify shutdown state.
@@ -256,8 +259,8 @@ func TestSubscriber_Close(t *testing.T) {
 
 		// Subscribe() should return ErrClosed.
 		runErr := <-runDone
-		if !errors.Is(runErr, ErrClosed) {
-			t.Errorf("Subscribe() should return ErrClosed, got: %v", runErr)
+		if diff := cmp.Diff(ErrClosed, runErr, cmpopts.EquateErrors()); diff != "" {
+			t.Errorf("Subscribe() error mismatch (-want +got):\n%s", diff)
 		}
 	})
 
@@ -290,8 +293,8 @@ func TestSubscriber_Close(t *testing.T) {
 		subscriber.Close()
 
 		runErr := <-runDone
-		if !errors.Is(runErr, ErrClosed) {
-			t.Errorf("Subscribe() should return ErrClosed, got: %v", runErr)
+		if diff := cmp.Diff(ErrClosed, runErr, cmpopts.EquateErrors()); diff != "" {
+			t.Errorf("Subscribe() error mismatch (-want +got):\n%s", diff)
 		}
 	})
 
@@ -302,8 +305,8 @@ func TestSubscriber_Close(t *testing.T) {
 		s.closed.Store(true)
 
 		err := s.exitError()
-		if !errors.Is(err, ErrClosed) {
-			t.Errorf("exitError() should return ErrClosed when both flags are set, got: %v", err)
+		if diff := cmp.Diff(ErrClosed, err, cmpopts.EquateErrors()); diff != "" {
+			t.Errorf("exitError() error mismatch (-want +got):\n%s", diff)
 		}
 	})
 }
@@ -369,8 +372,8 @@ func TestSubscriber_exitError(t *testing.T) {
 			}
 
 			got := s.exitError()
-			if !errors.Is(got, tt.want) {
-				t.Errorf("exitError() = %v, want %v", got, tt.want)
+			if diff := cmp.Diff(tt.want, got, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("exitError() error mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
@@ -419,8 +422,8 @@ func TestSubscriber_ExistingError(t *testing.T) {
 
 		// Subscribe() should return the existing error (initialization fails).
 		runErr := subscriber.Subscribe()
-		if !errors.Is(runErr, existingErr) {
-			t.Errorf("Subscribe() should return existing error, got: %v", runErr)
+		if diff := cmp.Diff(existingErr, runErr, cmpopts.EquateErrors()); diff != "" {
+			t.Errorf("Subscribe() error mismatch (-want +got):\n%s", diff)
 		}
 	})
 }
@@ -489,8 +492,8 @@ func TestConsumerFunc_Error(t *testing.T) {
 	})
 
 	err := f.Consume(context.Background(), &DataChangeRecord{})
-	if !errors.Is(err, testErr) {
-		t.Errorf("err = %v, want %v", err, testErr)
+	if diff := cmp.Diff(testErr, err, cmpopts.EquateErrors()); diff != "" {
+		t.Errorf("Consume() error mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -555,8 +558,8 @@ func TestSubscriber_detectAndSchedulePartitions(t *testing.T) {
 
 		s := newTestSubscriber(storage, 100*time.Millisecond)
 		err := s.detectAndSchedulePartitions()
-		if !errors.Is(err, storageErr) {
-			t.Errorf("err = %v, want %v", err, storageErr)
+		if diff := cmp.Diff(storageErr, err, cmpopts.EquateErrors()); diff != "" {
+			t.Errorf("detectAndSchedulePartitions() error mismatch (-want +got):\n%s", diff)
 		}
 	})
 
@@ -570,8 +573,8 @@ func TestSubscriber_detectAndSchedulePartitions(t *testing.T) {
 
 		s := newTestSubscriber(storage, 100*time.Millisecond)
 		err := s.detectAndSchedulePartitions()
-		if !errors.Is(err, storageErr) {
-			t.Errorf("err = %v, want %v", err, storageErr)
+		if diff := cmp.Diff(storageErr, err, cmpopts.EquateErrors()); diff != "" {
+			t.Errorf("detectAndSchedulePartitions() error mismatch (-want +got):\n%s", diff)
 		}
 	})
 
@@ -596,8 +599,8 @@ func TestSubscriber_detectAndSchedulePartitions(t *testing.T) {
 
 		s := newTestSubscriber(storage, 100*time.Millisecond)
 		err := s.detectAndSchedulePartitions()
-		if !errors.Is(err, storageErr) {
-			t.Errorf("err = %v, want %v", err, storageErr)
+		if diff := cmp.Diff(storageErr, err, cmpopts.EquateErrors()); diff != "" {
+			t.Errorf("detectAndSchedulePartitions() error mismatch (-want +got):\n%s", diff)
 		}
 	})
 
@@ -661,8 +664,8 @@ func TestSubscriber_initialize(t *testing.T) {
 
 		s := newTestSubscriber(storage, 100*time.Millisecond)
 		err := s.initialize()
-		if !errors.Is(err, initErr) {
-			t.Errorf("err = %v, want %v", err, initErr)
+		if diff := cmp.Diff(initErr, err, cmpopts.EquateErrors()); diff != "" {
+			t.Errorf("initialize() error mismatch (-want +got):\n%s", diff)
 		}
 	})
 }
@@ -678,8 +681,8 @@ func TestSubscriber_resumeInterruptedPartitions(t *testing.T) {
 
 		s := newTestSubscriber(storage, 100*time.Millisecond)
 		err := s.resumeInterruptedPartitions()
-		if !errors.Is(err, storageErr) {
-			t.Errorf("err = %v, want %v", err, storageErr)
+		if diff := cmp.Diff(storageErr, err, cmpopts.EquateErrors()); diff != "" {
+			t.Errorf("resumeInterruptedPartitions() error mismatch (-want +got):\n%s", diff)
 		}
 	})
 }
@@ -722,8 +725,8 @@ func TestSubscriber_MainLoopDetectError(t *testing.T) {
 
 		subscriber := newTestSubscriber(storage, 50*time.Millisecond)
 		err := subscriber.Subscribe()
-		if !errors.Is(err, storageErr) {
-			t.Errorf("Subscribe() = %v, want %v", err, storageErr)
+		if diff := cmp.Diff(storageErr, err, cmpopts.EquateErrors()); diff != "" {
+			t.Errorf("Subscribe() error mismatch (-want +got):\n%s", diff)
 		}
 	})
 }
@@ -771,8 +774,10 @@ func TestSubscriber_BaseContextCancellation(t *testing.T) {
 		select {
 		case err := <-runDone:
 			// ベースコンテキストのキャンセルはエラーなし(またはcontext.Canceled)。
-			if err != nil && !errors.Is(err, context.Canceled) {
-				t.Errorf("Subscribe() = %v, want nil or context.Canceled", err)
+			if err != nil {
+				if diff := cmp.Diff(context.Canceled, err, cmpopts.EquateErrors()); diff != "" {
+					t.Errorf("Subscribe() error mismatch (-want +got):\n%s", diff)
+				}
 			}
 		case <-time.After(500 * time.Millisecond):
 			t.Error("Subscribe() did not return after base context cancellation")
@@ -798,8 +803,8 @@ func TestSubscriber_ResumeError_FromSubscribe(t *testing.T) {
 
 		subscriber := newTestSubscriber(storage, 100*time.Millisecond)
 		err := subscriber.Subscribe()
-		if !errors.Is(err, resumeErr) {
-			t.Errorf("Subscribe() = %v, want %v", err, resumeErr)
+		if diff := cmp.Diff(resumeErr, err, cmpopts.EquateErrors()); diff != "" {
+			t.Errorf("Subscribe() error mismatch (-want +got):\n%s", diff)
 		}
 	})
 }
@@ -844,16 +849,17 @@ func TestSubscriber_Close_WithReaders(t *testing.T) {
 
 		select {
 		case err := <-runDone:
-			if !errors.Is(err, ErrClosed) {
-				t.Errorf("Subscribe() = %v, want ErrClosed", err)
+			if diff := cmp.Diff(ErrClosed, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("Subscribe() error mismatch (-want +got):\n%s", diff)
 			}
 		case <-time.After(500 * time.Millisecond):
 			t.Error("Subscribe() did not return after Close")
 		}
 
 		// リーダーのトラッカーが閉じているはず。
-		if err := tracker.acquire(context.Background()); err != errTrackerClosed {
-			t.Errorf("tracker.acquire() = %v, want errTrackerClosed", err)
+		acquireErr := tracker.acquire(context.Background())
+		if diff := cmp.Diff(errTrackerClosed, acquireErr, cmpopts.EquateErrors()); diff != "" {
+			t.Errorf("tracker.acquire() error mismatch (-want +got):\n%s", diff)
 		}
 	})
 }

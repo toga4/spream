@@ -20,6 +20,8 @@ import (
 	"cloud.google.com/go/spanner/admin/database/apiv1/databasepb"
 	instance "cloud.google.com/go/spanner/admin/instance/apiv1"
 	"cloud.google.com/go/spanner/admin/instance/apiv1/instancepb"
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	tcspanner "github.com/testcontainers/testcontainers-go/modules/gcloud/spanner"
 	"github.com/toga4/spream"
 	"github.com/toga4/spream/partitionstorage"
@@ -542,76 +544,196 @@ func TestSubscriber_DataChangeRecord(t *testing.T) {
 
 	got := consumer.snapshot()
 
-	// レコード数を検証する。
 	if len(got) != 3 {
 		t.Fatalf("got %d records, want 3", len(got))
 	}
 
-	// ModType の順序を検証する。
-	wantModTypes := []spream.ModType{spream.ModType_INSERT, spream.ModType_UPDATE, spream.ModType_DELETE}
-	for i, want := range wantModTypes {
-		if got[i].ModType != want {
-			t.Errorf("record[%d].ModType = %q, want %q", i, got[i].ModType, want)
-		}
+	// change stream は JSON 経由で値を返すため、Go の型表現は以下のようになる:
+	//   INT64           → string      (例: "1")
+	//   FLOAT32/FLOAT64 → float64     (例: 0.25)
+	//   BOOL            → bool        (例: true)
+	//   TIMESTAMP       → string      (RFC3339、エミュレータではナノ秒が切り捨てられる)
+	//   DATE            → string      (例: "2023-01-01")
+	//   STRING          → string      (例: "string")
+	//   BYTES           → string      (base64、例: "Ynl0ZXM=")
+	//   NUMERIC         → string      (例: "123.456")
+	//   JSON            → string      (JSON文字列、例: "{\"name\":\"foobar\"}")
+	//   ARRAY<T>        → []any       (各要素は上記の型)
+
+	wantRecords := []*spream.DataChangeRecord{
+		{
+			TableName:                            tableName,
+			IsLastRecordInTransactionInPartition: true,
+			ColumnTypes: []*spream.ColumnType{
+				{Name: "Bool", Type: spream.Type{Code: spream.TypeCode_BOOL}, OrdinalPosition: 1},
+				{Name: "Int64", Type: spream.Type{Code: spream.TypeCode_INT64}, IsPrimaryKey: true, OrdinalPosition: 2},
+				{Name: "Float32", Type: spream.Type{Code: spream.TypeCode_FLOAT32}, OrdinalPosition: 3},
+				{Name: "Float64", Type: spream.Type{Code: spream.TypeCode_FLOAT64}, OrdinalPosition: 4},
+				{Name: "Timestamp", Type: spream.Type{Code: spream.TypeCode_TIMESTAMP}, OrdinalPosition: 5},
+				{Name: "Date", Type: spream.Type{Code: spream.TypeCode_DATE}, OrdinalPosition: 6},
+				{Name: "String", Type: spream.Type{Code: spream.TypeCode_STRING}, OrdinalPosition: 7},
+				{Name: "Bytes", Type: spream.Type{Code: spream.TypeCode_BYTES}, OrdinalPosition: 8},
+				{Name: "Numeric", Type: spream.Type{Code: spream.TypeCode_NUMERIC}, OrdinalPosition: 9},
+				{Name: "Json", Type: spream.Type{Code: spream.TypeCode_JSON}, OrdinalPosition: 10},
+				{Name: "BoolArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_BOOL}}, OrdinalPosition: 11},
+				{Name: "Int64Array", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_INT64}}, OrdinalPosition: 12},
+				{Name: "Float32Array", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_FLOAT32}}, OrdinalPosition: 13},
+				{Name: "Float64Array", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_FLOAT64}}, OrdinalPosition: 14},
+				{Name: "TimestampArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_TIMESTAMP}}, OrdinalPosition: 15},
+				{Name: "DateArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_DATE}}, OrdinalPosition: 16},
+				{Name: "StringArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_STRING}}, OrdinalPosition: 17},
+				{Name: "BytesArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_BYTES}}, OrdinalPosition: 18},
+				{Name: "NumericArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_NUMERIC}}, OrdinalPosition: 19},
+				{Name: "JsonArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_JSON}}, OrdinalPosition: 20},
+			},
+			Mods: []*spream.Mod{{
+				Keys: map[string]any{"Int64": "1"},
+				NewValues: map[string]any{
+					"Bool": true, "Float32": 0.25, "Float64": 0.5,
+					"Timestamp": "2023-12-31T23:59:59Z", "Date": "2023-01-01",
+					"String": "string", "Bytes": "Ynl0ZXM=",
+					"Numeric": "123.456", "Json": `{"name":"foobar"}`,
+					"BoolArray":      []any{true, false},
+					"Int64Array":     []any{"1", "2"},
+					"Float32Array":   []any{0.25, 0.75},
+					"Float64Array":   []any{0.5, 0.25},
+					"TimestampArray": []any{"2023-12-31T23:59:59Z", "2023-01-01T00:00:00Z"},
+					"DateArray":      []any{"2023-01-01", "2023-02-01"},
+					"StringArray":    []any{"string1", "string2"},
+					"BytesArray":     []any{"Ynl0ZXMx", "Ynl0ZXMy"},
+					"NumericArray":   []any{"12.345", "67.89"},
+					"JsonArray":      []any{`{"name":"foobar"}`, `{"name":"barbaz"}`},
+				},
+				OldValues: map[string]any{},
+			}},
+			ModType:                              spream.ModType_INSERT,
+			ValueCaptureType:                     "OLD_AND_NEW_VALUES",
+			NumberOfRecordsInTransaction:         1,
+			NumberOfPartitionsInTransaction:      1,
+		},
+		{
+			TableName:                            tableName,
+			IsLastRecordInTransactionInPartition: true,
+			ColumnTypes: []*spream.ColumnType{
+				{Name: "Bool", Type: spream.Type{Code: spream.TypeCode_BOOL}, OrdinalPosition: 1},
+				{Name: "Int64", Type: spream.Type{Code: spream.TypeCode_INT64}, IsPrimaryKey: true, OrdinalPosition: 2},
+				{Name: "Float32", Type: spream.Type{Code: spream.TypeCode_FLOAT32}, OrdinalPosition: 3},
+				{Name: "Float64", Type: spream.Type{Code: spream.TypeCode_FLOAT64}, OrdinalPosition: 4},
+				{Name: "Timestamp", Type: spream.Type{Code: spream.TypeCode_TIMESTAMP}, OrdinalPosition: 5},
+				{Name: "Date", Type: spream.Type{Code: spream.TypeCode_DATE}, OrdinalPosition: 6},
+				{Name: "String", Type: spream.Type{Code: spream.TypeCode_STRING}, OrdinalPosition: 7},
+				{Name: "Bytes", Type: spream.Type{Code: spream.TypeCode_BYTES}, OrdinalPosition: 8},
+				{Name: "Numeric", Type: spream.Type{Code: spream.TypeCode_NUMERIC}, OrdinalPosition: 9},
+				{Name: "Json", Type: spream.Type{Code: spream.TypeCode_JSON}, OrdinalPosition: 10},
+				{Name: "BoolArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_BOOL}}, OrdinalPosition: 11},
+				{Name: "Int64Array", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_INT64}}, OrdinalPosition: 12},
+				{Name: "Float32Array", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_FLOAT32}}, OrdinalPosition: 13},
+				{Name: "Float64Array", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_FLOAT64}}, OrdinalPosition: 14},
+				{Name: "TimestampArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_TIMESTAMP}}, OrdinalPosition: 15},
+				{Name: "DateArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_DATE}}, OrdinalPosition: 16},
+				{Name: "StringArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_STRING}}, OrdinalPosition: 17},
+				{Name: "BytesArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_BYTES}}, OrdinalPosition: 18},
+				{Name: "NumericArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_NUMERIC}}, OrdinalPosition: 19},
+				{Name: "JsonArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_JSON}}, OrdinalPosition: 20},
+			},
+			Mods: []*spream.Mod{{
+				Keys: map[string]any{"Int64": "1"},
+				NewValues: map[string]any{
+					"Bool": false, "Float32": 0.25, "Float64": 0.5,
+					"Timestamp": "2023-12-31T23:59:59Z", "Date": "2023-01-01",
+					"String": "string", "Bytes": "Ynl0ZXM=",
+					"Numeric": "123.456", "Json": `{"name":"foobar"}`,
+					"BoolArray":      []any{true, false},
+					"Int64Array":     []any{"1", "2"},
+					"Float32Array":   []any{0.25, 0.75},
+					"Float64Array":   []any{0.5, 0.25},
+					"TimestampArray": []any{"2023-12-31T23:59:59Z", "2023-01-01T00:00:00Z"},
+					"DateArray":      []any{"2023-01-01", "2023-02-01"},
+					"StringArray":    []any{"string1", "string2"},
+					"BytesArray":     []any{"Ynl0ZXMx", "Ynl0ZXMy"},
+					"NumericArray":   []any{"12.345", "67.89"},
+					"JsonArray":      []any{`{"name":"foobar"}`, `{"name":"barbaz"}`},
+				},
+				OldValues: map[string]any{
+					"Bool": true, "Float32": 0.25, "Float64": 0.5,
+					"Timestamp": "2023-12-31T23:59:59Z", "Date": "2023-01-01",
+					"String": "string", "Bytes": "Ynl0ZXM=",
+					"Numeric": "123.456", "Json": `{"name":"foobar"}`,
+					"BoolArray":      []any{true, false},
+					"Int64Array":     []any{"1", "2"},
+					"Float32Array":   []any{0.25, 0.75},
+					"Float64Array":   []any{0.5, 0.25},
+					"TimestampArray": []any{"2023-12-31T23:59:59Z", "2023-01-01T00:00:00Z"},
+					"DateArray":      []any{"2023-01-01", "2023-02-01"},
+					"StringArray":    []any{"string1", "string2"},
+					"BytesArray":     []any{"Ynl0ZXMx", "Ynl0ZXMy"},
+					"NumericArray":   []any{"12.345", "67.89"},
+					"JsonArray":      []any{`{"name":"foobar"}`, `{"name":"barbaz"}`},
+				},
+			}},
+			ModType:                              spream.ModType_UPDATE,
+			ValueCaptureType:                     "OLD_AND_NEW_VALUES",
+			NumberOfRecordsInTransaction:         1,
+			NumberOfPartitionsInTransaction:      1,
+		},
+		{
+			TableName:                            tableName,
+			IsLastRecordInTransactionInPartition: true,
+			ColumnTypes: []*spream.ColumnType{
+				{Name: "Bool", Type: spream.Type{Code: spream.TypeCode_BOOL}, OrdinalPosition: 1},
+				{Name: "Int64", Type: spream.Type{Code: spream.TypeCode_INT64}, IsPrimaryKey: true, OrdinalPosition: 2},
+				{Name: "Float32", Type: spream.Type{Code: spream.TypeCode_FLOAT32}, OrdinalPosition: 3},
+				{Name: "Float64", Type: spream.Type{Code: spream.TypeCode_FLOAT64}, OrdinalPosition: 4},
+				{Name: "Timestamp", Type: spream.Type{Code: spream.TypeCode_TIMESTAMP}, OrdinalPosition: 5},
+				{Name: "Date", Type: spream.Type{Code: spream.TypeCode_DATE}, OrdinalPosition: 6},
+				{Name: "String", Type: spream.Type{Code: spream.TypeCode_STRING}, OrdinalPosition: 7},
+				{Name: "Bytes", Type: spream.Type{Code: spream.TypeCode_BYTES}, OrdinalPosition: 8},
+				{Name: "Numeric", Type: spream.Type{Code: spream.TypeCode_NUMERIC}, OrdinalPosition: 9},
+				{Name: "Json", Type: spream.Type{Code: spream.TypeCode_JSON}, OrdinalPosition: 10},
+				{Name: "BoolArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_BOOL}}, OrdinalPosition: 11},
+				{Name: "Int64Array", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_INT64}}, OrdinalPosition: 12},
+				{Name: "Float32Array", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_FLOAT32}}, OrdinalPosition: 13},
+				{Name: "Float64Array", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_FLOAT64}}, OrdinalPosition: 14},
+				{Name: "TimestampArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_TIMESTAMP}}, OrdinalPosition: 15},
+				{Name: "DateArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_DATE}}, OrdinalPosition: 16},
+				{Name: "StringArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_STRING}}, OrdinalPosition: 17},
+				{Name: "BytesArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_BYTES}}, OrdinalPosition: 18},
+				{Name: "NumericArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_NUMERIC}}, OrdinalPosition: 19},
+				{Name: "JsonArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_JSON}}, OrdinalPosition: 20},
+			},
+			Mods: []*spream.Mod{{
+				Keys: map[string]any{"Int64": "1"},
+				NewValues: map[string]any{},
+				OldValues: map[string]any{
+					"Bool": false, "Float32": 0.25, "Float64": 0.5,
+					"Timestamp": "2023-12-31T23:59:59Z", "Date": "2023-01-01",
+					"String": "string", "Bytes": "Ynl0ZXM=",
+					"Numeric": "123.456", "Json": `{"name":"foobar"}`,
+					"BoolArray":      []any{true, false},
+					"Int64Array":     []any{"1", "2"},
+					"Float32Array":   []any{0.25, 0.75},
+					"Float64Array":   []any{0.5, 0.25},
+					"TimestampArray": []any{"2023-12-31T23:59:59Z", "2023-01-01T00:00:00Z"},
+					"DateArray":      []any{"2023-01-01", "2023-02-01"},
+					"StringArray":    []any{"string1", "string2"},
+					"BytesArray":     []any{"Ynl0ZXMx", "Ynl0ZXMy"},
+					"NumericArray":   []any{"12.345", "67.89"},
+					"JsonArray":      []any{`{"name":"foobar"}`, `{"name":"barbaz"}`},
+				},
+			}},
+			ModType:                              spream.ModType_DELETE,
+			ValueCaptureType:                     "OLD_AND_NEW_VALUES",
+			NumberOfRecordsInTransaction:         1,
+			NumberOfPartitionsInTransaction:      1,
+		},
 	}
 
-	// 各レコードの基本的な構造を検証する。
-	for i, record := range got {
-		if record.TableName != tableName {
-			t.Errorf("record[%d].TableName = %q, want %q", i, record.TableName, tableName)
-		}
-		if record.ValueCaptureType != "OLD_AND_NEW_VALUES" {
-			t.Errorf("record[%d].ValueCaptureType = %q, want %q", i, record.ValueCaptureType, "OLD_AND_NEW_VALUES")
-		}
-		if len(record.Mods) != 1 {
-			t.Errorf("record[%d].Mods has %d entries, want 1", i, len(record.Mods))
-			continue
-		}
-		if record.Mods[0].Keys["Int64"] != "1" {
-			t.Errorf("record[%d].Mods[0].Keys[\"Int64\"] = %v, want \"1\"", i, record.Mods[0].Keys["Int64"])
-		}
+	diffOpts := cmp.Options{
+		cmpopts.IgnoreFields(spream.DataChangeRecord{}, "CommitTimestamp", "RecordSequence", "ServerTransactionID"),
+		cmpopts.SortSlices(func(a, b *spream.ColumnType) bool { return a.Name < b.Name }),
 	}
-
-	// INSERT レコードの NewValues を検証する。
-	insertRecord := got[0]
-	insertNewValues := insertRecord.Mods[0].NewValues
-	if insertNewValues["Bool"] != true {
-		t.Errorf("INSERT NewValues[\"Bool\"] = %v, want true", insertNewValues["Bool"])
-	}
-	if insertNewValues["Float64"] != 0.5 {
-		t.Errorf("INSERT NewValues[\"Float64\"] = %v, want 0.5", insertNewValues["Float64"])
-	}
-	if insertNewValues["String"] != "string" {
-		t.Errorf("INSERT NewValues[\"String\"] = %v, want \"string\"", insertNewValues["String"])
-	}
-	if insertNewValues["Numeric"] != "123.456" {
-		t.Errorf("INSERT NewValues[\"Numeric\"] = %v, want \"123.456\"", insertNewValues["Numeric"])
-	}
-	if insertNewValues["Float32"] != 0.25 {
-		t.Errorf("INSERT NewValues[\"Float32\"] = %v, want 0.25", insertNewValues["Float32"])
-	}
-
-	// INSERT の ColumnTypes にすべてのカラムが含まれることを検証する。
-	if len(insertRecord.ColumnTypes) != 20 {
-		t.Errorf("INSERT ColumnTypes has %d entries, want 20", len(insertRecord.ColumnTypes))
-	}
-
-	// UPDATE レコードの NewValues/OldValues を検証する。
-	updateRecord := got[1]
-	if updateRecord.Mods[0].NewValues["Bool"] != false {
-		t.Errorf("UPDATE NewValues[\"Bool\"] = %v, want false", updateRecord.Mods[0].NewValues["Bool"])
-	}
-	if updateRecord.Mods[0].OldValues["Bool"] != true {
-		t.Errorf("UPDATE OldValues[\"Bool\"] = %v, want true", updateRecord.Mods[0].OldValues["Bool"])
-	}
-
-	// DELETE レコードの NewValues が空であることを検証する。
-	deleteRecord := got[2]
-	if len(deleteRecord.Mods[0].NewValues) != 0 {
-		t.Errorf("DELETE NewValues should be empty, got %v", deleteRecord.Mods[0].NewValues)
-	}
-	if len(deleteRecord.Mods[0].OldValues) == 0 {
-		t.Error("DELETE OldValues should not be empty")
+	if diff := cmp.Diff(wantRecords, got, diffOpts...); diff != "" {
+		t.Errorf("records mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -1180,107 +1302,55 @@ func TestSubscriber_DataChangeRecord_ExtendedTypes(t *testing.T) {
 	}
 
 	got := consumer.snapshot()
-	if len(got) < 1 {
-		t.Fatalf("got %d records, want >= 1", len(got))
+	if len(got) != 1 {
+		t.Fatalf("got %d records, want 1", len(got))
 	}
 
-	record := got[0]
+	// change stream は JSON 経由で値を返すため、Go の型表現は以下のようになる:
+	//   PROTO → string (base64エンコードされたバイナリ、空メッセージなら "")
+	//   ENUM  → string (数値文字列、例: "0")
+	//   UUID  → string (例: "550e8400-e29b-41d4-a716-446655440000")
+	//   未設定の ARRAY カラム → nil
 
-	// ColumnType のマップを作成する。
-	colTypeMap := make(map[string]*spream.ColumnType)
-	for _, ct := range record.ColumnTypes {
-		colTypeMap[ct.Name] = ct
+	wantRecords := []*spream.DataChangeRecord{
+		{
+			TableName:                            tableName,
+			IsLastRecordInTransactionInPartition: true,
+			ColumnTypes: []*spream.ColumnType{
+				{Name: "Key", Type: spream.Type{Code: spream.TypeCode_INT64}, IsPrimaryKey: true, OrdinalPosition: 1},
+				{Name: "ProtoCol", Type: spream.Type{Code: spream.TypeCode_PROTO, ProtoTypeFqn: msgFqn}, OrdinalPosition: 2},
+				{Name: "EnumCol", Type: spream.Type{Code: spream.TypeCode_ENUM, ProtoTypeFqn: enumFqn}, OrdinalPosition: 3},
+				{Name: "UuidCol", Type: spream.Type{Code: spream.TypeCode_UUID}, OrdinalPosition: 4},
+				{Name: "ProtoArrayCol", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_PROTO, ProtoTypeFqn: msgFqn}}, OrdinalPosition: 5},
+				{Name: "EnumArrayCol", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_ENUM, ProtoTypeFqn: enumFqn}}, OrdinalPosition: 6},
+				{Name: "UuidArrayCol", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_UUID}}, OrdinalPosition: 7},
+			},
+			Mods: []*spream.Mod{{
+				Keys: map[string]any{"Key": "1"},
+				NewValues: map[string]any{
+					"ProtoCol":      "",
+					"EnumCol":       "0",
+					"UuidCol":       "550e8400-e29b-41d4-a716-446655440000",
+					"ProtoArrayCol": nil,
+					"EnumArrayCol":  nil,
+					"UuidArrayCol":  nil,
+				},
+				OldValues: map[string]any{},
+			}},
+			ModType:                              spream.ModType_INSERT,
+			ValueCaptureType:                     "OLD_AND_NEW_VALUES",
+			NumberOfRecordsInTransaction:         1,
+			NumberOfPartitionsInTransaction:      1,
+		},
 	}
 
-	// Key: INT64
-	if ct, ok := colTypeMap["Key"]; !ok {
-		t.Error("ColumnType for Key not found")
-	} else if ct.Type.Code != spream.TypeCode_INT64 {
-		t.Errorf("Key.Type.Code = %v, want %v", ct.Type.Code, spream.TypeCode_INT64)
+	diffOpts := cmp.Options{
+		cmpopts.IgnoreFields(spream.DataChangeRecord{}, "CommitTimestamp", "RecordSequence", "ServerTransactionID"),
+		cmpopts.SortSlices(func(a, b *spream.ColumnType) bool { return a.Name < b.Name }),
 	}
-
-	// ProtoCol: PROTO with FQN
-	if ct, ok := colTypeMap["ProtoCol"]; !ok {
-		t.Error("ColumnType for ProtoCol not found")
-	} else {
-		if ct.Type.Code != spream.TypeCode_PROTO {
-			t.Errorf("ProtoCol.Type.Code = %v, want %v", ct.Type.Code, spream.TypeCode_PROTO)
-		}
-		if ct.Type.ProtoTypeFqn != msgFqn {
-			t.Errorf("ProtoCol.Type.ProtoTypeFqn = %v, want %v", ct.Type.ProtoTypeFqn, msgFqn)
-		}
+	if diff := cmp.Diff(wantRecords, got, diffOpts...); diff != "" {
+		t.Errorf("records mismatch (-want +got):\n%s", diff)
 	}
-
-	// EnumCol: ENUM with FQN
-	if ct, ok := colTypeMap["EnumCol"]; !ok {
-		t.Error("ColumnType for EnumCol not found")
-	} else {
-		if ct.Type.Code != spream.TypeCode_ENUM {
-			t.Errorf("EnumCol.Type.Code = %v, want %v", ct.Type.Code, spream.TypeCode_ENUM)
-		}
-		if ct.Type.ProtoTypeFqn != enumFqn {
-			t.Errorf("EnumCol.Type.ProtoTypeFqn = %v, want %v", ct.Type.ProtoTypeFqn, enumFqn)
-		}
-	}
-
-	// UuidCol: UUID
-	if ct, ok := colTypeMap["UuidCol"]; !ok {
-		t.Error("ColumnType for UuidCol not found")
-	} else if ct.Type.Code != spream.TypeCode_UUID {
-		t.Errorf("UuidCol.Type.Code = %v, want %v", ct.Type.Code, spream.TypeCode_UUID)
-	}
-
-	// ProtoArrayCol: ARRAY<PROTO>
-	if ct, ok := colTypeMap["ProtoArrayCol"]; !ok {
-		t.Error("ColumnType for ProtoArrayCol not found")
-	} else {
-		if ct.Type.Code != spream.TypeCode_ARRAY {
-			t.Errorf("ProtoArrayCol.Type.Code = %v, want %v", ct.Type.Code, spream.TypeCode_ARRAY)
-		}
-		if ct.Type.ArrayElementType == nil {
-			t.Fatal("ProtoArrayCol.Type.ArrayElementType is nil, want non-nil")
-		}
-		if ct.Type.ArrayElementType.Code != spream.TypeCode_PROTO {
-			t.Errorf("ProtoArrayCol.Type.ArrayElementType.Code = %v, want %v", ct.Type.ArrayElementType.Code, spream.TypeCode_PROTO)
-		}
-		if ct.Type.ArrayElementType.ProtoTypeFqn != msgFqn {
-			t.Errorf("ProtoArrayCol.Type.ArrayElementType.ProtoTypeFqn = %v, want %v", ct.Type.ArrayElementType.ProtoTypeFqn, msgFqn)
-		}
-	}
-
-	// EnumArrayCol: ARRAY<ENUM>
-	if ct, ok := colTypeMap["EnumArrayCol"]; !ok {
-		t.Error("ColumnType for EnumArrayCol not found")
-	} else {
-		if ct.Type.Code != spream.TypeCode_ARRAY {
-			t.Errorf("EnumArrayCol.Type.Code = %v, want %v", ct.Type.Code, spream.TypeCode_ARRAY)
-		}
-		if ct.Type.ArrayElementType == nil {
-			t.Fatal("EnumArrayCol.Type.ArrayElementType is nil, want non-nil")
-		}
-		if ct.Type.ArrayElementType.Code != spream.TypeCode_ENUM {
-			t.Errorf("EnumArrayCol.Type.ArrayElementType.Code = %v, want %v", ct.Type.ArrayElementType.Code, spream.TypeCode_ENUM)
-		}
-		if ct.Type.ArrayElementType.ProtoTypeFqn != enumFqn {
-			t.Errorf("EnumArrayCol.Type.ArrayElementType.ProtoTypeFqn = %v, want %v", ct.Type.ArrayElementType.ProtoTypeFqn, enumFqn)
-		}
-	}
-
-	// UuidArrayCol: ARRAY<UUID>
-	if ct, ok := colTypeMap["UuidArrayCol"]; !ok {
-		t.Error("ColumnType for UuidArrayCol not found")
-	} else {
-		if ct.Type.Code != spream.TypeCode_ARRAY {
-			t.Errorf("UuidArrayCol.Type.Code = %v, want %v", ct.Type.Code, spream.TypeCode_ARRAY)
-		}
-		if ct.Type.ArrayElementType == nil {
-			t.Fatal("UuidArrayCol.Type.ArrayElementType is nil, want non-nil")
-		}
-		if ct.Type.ArrayElementType.Code != spream.TypeCode_UUID {
-			t.Errorf("UuidArrayCol.Type.ArrayElementType.Code = %v, want %v", ct.Type.ArrayElementType.Code, spream.TypeCode_UUID)
-		}
-	}
-
 }
 
 // TestSubscriber_EndTimestamp はエミュレータが endTimestamp でストリームを終了しないため、

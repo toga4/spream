@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/toga4/spream"
 )
 
@@ -32,30 +34,22 @@ func TestInmemoryPartitionStorage_InitializeRootPartition(t *testing.T) {
 	}
 
 	// ルートパーティションが正しく作成されたか確認する。
-	p := storage.m[spream.RootPartitionToken]
-	if p == nil {
+	got := storage.m[spream.RootPartitionToken]
+	if got == nil {
 		t.Fatal("root partition was not created")
 	}
-	if p.PartitionToken != spream.RootPartitionToken {
-		t.Errorf("PartitionToken = %v, want %q", p.PartitionToken, spream.RootPartitionToken)
+
+	want := &spream.PartitionMetadata{
+		PartitionToken:  spream.RootPartitionToken,
+		ParentTokens:    []string{},
+		StartTimestamp:  startTs,
+		EndTimestamp:    endTs,
+		HeartbeatMillis: heartbeat.Milliseconds(),
+		State:           spream.StateCreated,
+		Watermark:       startTs,
 	}
-	if !p.StartTimestamp.Equal(startTs) {
-		t.Errorf("StartTimestamp = %v, want %v", p.StartTimestamp, startTs)
-	}
-	if !p.EndTimestamp.Equal(endTs) {
-		t.Errorf("EndTimestamp = %v, want %v", p.EndTimestamp, endTs)
-	}
-	if p.HeartbeatMillis != heartbeat.Milliseconds() {
-		t.Errorf("HeartbeatMillis = %v, want %v", p.HeartbeatMillis, heartbeat.Milliseconds())
-	}
-	if p.State != spream.StateCreated {
-		t.Errorf("State = %v, want %v", p.State, spream.StateCreated)
-	}
-	if !p.Watermark.Equal(startTs) {
-		t.Errorf("Watermark = %v, want %v", p.Watermark, startTs)
-	}
-	if len(p.ParentTokens) != 0 {
-		t.Errorf("len(ParentTokens) = %d, want 0", len(p.ParentTokens))
+	if diff := cmp.Diff(want, got, cmpopts.IgnoreFields(spream.PartitionMetadata{}, "CreatedAt")); diff != "" {
+		t.Errorf("root partition mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -211,38 +205,40 @@ func TestInmemoryPartitionStorage_AddChildPartitions(t *testing.T) {
 		t.Fatalf("len(m) = %d, want 2", len(storage.m))
 	}
 
-	child1 := storage.m["child-1"]
-	if child1 == nil {
+	ignoreCreatedAt := cmpopts.IgnoreFields(spream.PartitionMetadata{}, "CreatedAt")
+
+	gotChild1 := storage.m["child-1"]
+	if gotChild1 == nil {
 		t.Fatal("child-1 not found")
 	}
-	if child1.PartitionToken != "child-1" {
-		t.Errorf("child1.PartitionToken = %v, want %q", child1.PartitionToken, "child-1")
+	wantChild1 := &spream.PartitionMetadata{
+		PartitionToken:  "child-1",
+		ParentTokens:    []string{"parent-1"},
+		StartTimestamp:  startTs,
+		EndTimestamp:    endTs,
+		HeartbeatMillis: 10000,
+		State:           spream.StateCreated,
+		Watermark:       startTs,
 	}
-	if len(child1.ParentTokens) != 1 || child1.ParentTokens[0] != "parent-1" {
-		t.Errorf("child1.ParentTokens = %v, want [parent-1]", child1.ParentTokens)
-	}
-	if !child1.StartTimestamp.Equal(startTs) {
-		t.Errorf("child1.StartTimestamp = %v, want %v", child1.StartTimestamp, startTs)
-	}
-	if !child1.EndTimestamp.Equal(endTs) {
-		t.Errorf("child1.EndTimestamp = %v, want %v", child1.EndTimestamp, endTs)
-	}
-	if child1.HeartbeatMillis != 10000 {
-		t.Errorf("child1.HeartbeatMillis = %v, want 10000", child1.HeartbeatMillis)
-	}
-	if child1.State != spream.StateCreated {
-		t.Errorf("child1.State = %v, want %v", child1.State, spream.StateCreated)
-	}
-	if !child1.Watermark.Equal(startTs) {
-		t.Errorf("child1.Watermark = %v, want %v", child1.Watermark, startTs)
+	if diff := cmp.Diff(wantChild1, gotChild1, ignoreCreatedAt); diff != "" {
+		t.Errorf("child-1 mismatch (-want +got):\n%s", diff)
 	}
 
-	child2 := storage.m["child-2"]
-	if child2 == nil {
+	gotChild2 := storage.m["child-2"]
+	if gotChild2 == nil {
 		t.Fatal("child-2 not found")
 	}
-	if len(child2.ParentTokens) != 2 {
-		t.Errorf("len(child2.ParentTokens) = %d, want 2", len(child2.ParentTokens))
+	wantChild2 := &spream.PartitionMetadata{
+		PartitionToken:  "child-2",
+		ParentTokens:    []string{"parent-1", "parent-2"},
+		StartTimestamp:  startTs,
+		EndTimestamp:    endTs,
+		HeartbeatMillis: 10000,
+		State:           spream.StateCreated,
+		Watermark:       startTs,
+	}
+	if diff := cmp.Diff(wantChild2, gotChild2, ignoreCreatedAt); diff != "" {
+		t.Errorf("child-2 mismatch (-want +got):\n%s", diff)
 	}
 }
 

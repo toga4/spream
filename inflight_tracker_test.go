@@ -5,6 +5,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 )
 
 func TestInflightTracker_BasicFlow(t *testing.T) {
@@ -122,8 +125,8 @@ func TestInflightTracker_Error(t *testing.T) {
 	// Error should be sent to errors channel.
 	select {
 	case err := <-tracker.errors:
-		if err != testErr {
-			t.Fatalf("expected error %v, got %v", testErr, err)
+		if diff := cmp.Diff(testErr, err, cmpopts.EquateErrors()); diff != "" {
+			t.Fatalf("error mismatch (-want +got):\n%s", diff)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected error")
@@ -154,8 +157,8 @@ func TestInflightTracker_Backpressure(t *testing.T) {
 	defer cancel()
 
 	err := tracker.acquire(ctxWithTimeout)
-	if err != context.DeadlineExceeded {
-		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	if diff := cmp.Diff(context.DeadlineExceeded, err, cmpopts.EquateErrors()); diff != "" {
+		t.Fatalf("acquire() error mismatch (-want +got):\n%s", diff)
 	}
 
 	tracker.close()
@@ -204,8 +207,8 @@ func TestInflightTracker_Closed(t *testing.T) {
 
 	// Acquire should fail on closed tracker.
 	err := tracker.acquire(context.Background())
-	if err != errTrackerClosed {
-		t.Fatalf("expected errTrackerClosed, got %v", err)
+	if diff := cmp.Diff(errTrackerClosed, err, cmpopts.EquateErrors()); diff != "" {
+		t.Fatalf("acquire() error mismatch (-want +got):\n%s", diff)
 	}
 }
 

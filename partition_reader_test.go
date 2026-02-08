@@ -5,6 +5,9 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 )
 
 func TestNewPartitionReader(t *testing.T) {
@@ -150,8 +153,8 @@ func TestPartitionReader_ProcessWatermarks(t *testing.T) {
 
 		select {
 		case err := <-done:
-			if !errors.Is(err, updateErr) {
-				t.Errorf("err = %v, want %v", err, updateErr)
+			if diff := cmp.Diff(updateErr, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("processWatermarks() error mismatch (-want +got):\n%s", diff)
 			}
 		case <-time.After(time.Second):
 			t.Fatal("processWatermarks did not return")
@@ -202,8 +205,8 @@ func TestPartitionReader_ProcessErrors(t *testing.T) {
 
 		select {
 		case err := <-done:
-			if !errors.Is(err, consumerErr) {
-				t.Errorf("err = %v, want %v", err, consumerErr)
+			if diff := cmp.Diff(consumerErr, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("processErrors() error mismatch (-want +got):\n%s", diff)
 			}
 		case <-time.After(time.Second):
 			t.Fatal("processErrors did not return")
@@ -250,8 +253,8 @@ func TestPartitionReader_ProcessErrors(t *testing.T) {
 
 		select {
 		case err := <-done:
-			if !errors.Is(err, context.Canceled) {
-				t.Errorf("err = %v, want context.Canceled", err)
+			if diff := cmp.Diff(context.Canceled, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("processErrors() error mismatch (-want +got):\n%s", diff)
 			}
 		case <-time.After(time.Second):
 			t.Fatal("processErrors did not return")
@@ -352,8 +355,8 @@ func TestPartitionReader_ProcessChildPartitionsRecord(t *testing.T) {
 		}
 
 		err := reader.processChildPartitionsRecord(context.Background(), &ChildPartitionsRecord{})
-		if !errors.Is(err, storageErr) {
-			t.Errorf("err = %v, want %v", err, storageErr)
+		if diff := cmp.Diff(storageErr, err, cmpopts.EquateErrors()); diff != "" {
+			t.Errorf("processChildPartitionsRecord() error mismatch (-want +got):\n%s", diff)
 		}
 	})
 }
@@ -425,8 +428,8 @@ func TestPartitionReader_ProcessDataChangeRecord(t *testing.T) {
 		cancel()
 
 		err := reader.processDataChangeRecord(ctx, &dataChangeRecord{CommitTimestamp: time.Now()})
-		if !errors.Is(err, context.Canceled) {
-			t.Errorf("err = %v, want context.Canceled", err)
+		if diff := cmp.Diff(context.Canceled, err, cmpopts.EquateErrors()); diff != "" {
+			t.Errorf("processDataChangeRecord() error mismatch (-want +got):\n%s", diff)
 		}
 	})
 }
@@ -519,8 +522,8 @@ func TestPartitionReader_ProcessRecords_DataChangeRecordError(t *testing.T) {
 	}
 
 	err := reader.processRecords(ctx, records)
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("err = %v, want context.Canceled", err)
+	if diff := cmp.Diff(context.Canceled, err, cmpopts.EquateErrors()); diff != "" {
+		t.Errorf("processRecords() error mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -551,8 +554,8 @@ func TestPartitionReader_ProcessRecords_ChildPartitionsError(t *testing.T) {
 	}
 
 	err := reader.processRecords(context.Background(), records)
-	if !errors.Is(err, storageErr) {
-		t.Errorf("err = %v, want %v", err, storageErr)
+	if diff := cmp.Diff(storageErr, err, cmpopts.EquateErrors()); diff != "" {
+		t.Errorf("processRecords() error mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -587,7 +590,7 @@ func TestPartitionReader_Close(t *testing.T) {
 	reader.close()
 
 	err := tracker.acquire(context.Background())
-	if err != errTrackerClosed {
-		t.Errorf("err = %v, want errTrackerClosed", err)
+	if diff := cmp.Diff(errTrackerClosed, err, cmpopts.EquateErrors()); diff != "" {
+		t.Errorf("acquire() error mismatch (-want +got):\n%s", diff)
 	}
 }
