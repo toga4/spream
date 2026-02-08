@@ -70,7 +70,15 @@ func (r *partitionReader) run(ctx context.Context) error {
 
 	// Change Stream reading.
 	g.Go(func() error {
-		return r.readStream(gctx)
+		if err := r.readStream(gctx); err != nil {
+			return err
+		}
+		// EndTimestamp に到達してストリームが正常終了した。
+		// inflight レコードをドレインしてから tracker を閉じ、
+		// processWatermarks/processErrors のチャネル待ちを解除する。
+		r.tracker.drain()
+		r.tracker.close()
+		return nil
 	})
 
 	// Wait for all goroutines to complete.

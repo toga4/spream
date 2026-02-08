@@ -1353,11 +1353,59 @@ func TestSubscriber_DataChangeRecord_ExtendedTypes(t *testing.T) {
 	}
 }
 
-// TestSubscriber_EndTimestamp はエミュレータが endTimestamp でストリームを終了しないため、
-// エミュレータ環境ではスキップする。実 Spanner では EndTimestamp 到達時に Subscribe が
-// nil を返して正常終了することを検証する。
 func ptr[T any](v T) *T { return &v }
 
+// TestSubscriber_EndTimestamp は EndTimestamp 到達時に Subscribe が nil を返して
+// 正常終了することを検証する。
 func TestSubscriber_EndTimestamp(t *testing.T) {
-	requireRealSpanner(t)
+	requireSpanner(t)
+	t.Parallel()
+	ctx := context.Background()
+
+	spannerClient, streamName, tableName, storage := setupSubscriberTest(t, ctx)
+	consumer := &recordingConsumer{}
+
+	// 現在時刻から少し先を EndTimestamp に設定する。
+	endTimestamp := time.Now().Add(15 * time.Second)
+
+	subscriber, err := spream.NewSubscriber(&spream.Config{
+		SpannerClient:    spannerClient,
+		StreamName:       streamName,
+		PartitionStorage: storage,
+		Consumer:         consumer,
+		EndTimestamp:      endTimestamp,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create subscriber: %v", err)
+	}
+
+	subscribeDone := make(chan error, 1)
+	go func() {
+		subscribeDone <- subscriber.Subscribe()
+	}()
+
+	// データを投入して、Change Stream が動作していることを確認する。
+	if err := insertRows(ctx, spannerClient, tableName, 1); err != nil {
+		t.Fatalf("Failed to insert rows: %v", err)
+	}
+
+	if !waitForRecords(consumer, 1, 30*time.Second) {
+		select {
+		case err := <-subscribeDone:
+			t.Fatalf("Subscribe returned early with error: %v", err)
+		default:
+		}
+		t.Fatalf("Timed out waiting for records: got %d, want >= 1", consumer.count())
+	}
+
+	// EndTimestamp 到達後、Subscribe は nil を返して正常終了する。
+	select {
+	case err := <-subscribeDone:
+		if err != nil {
+			t.Errorf("Subscribe() = %v, want nil", err)
+		}
+	case <-time.After(60 * time.Second):
+		subscriber.Close()
+		t.Fatal("Subscribe() did not return after EndTimestamp")
+	}
 }
