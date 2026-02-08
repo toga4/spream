@@ -238,6 +238,16 @@ func TestInflightTracker_ConcurrentAccess(t *testing.T) {
 	tracker.close()
 }
 
+func TestInflightTracker_CloseIdempotent(t *testing.T) {
+	tracker := newInflightTracker(3)
+
+	// 1回目のclose。
+	tracker.close()
+
+	// 2回目のcloseでパニックしないことを確認する。
+	tracker.close()
+}
+
 func TestInflightTracker_MixedAck(t *testing.T) {
 	tracker := newInflightTracker(10)
 	ctx := context.Background()

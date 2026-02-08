@@ -460,6 +460,404 @@ func TestSubscriber_AlreadyStarted(t *testing.T) {
 	})
 }
 
+func TestConsumerFunc(t *testing.T) {
+	called := false
+	var gotRecord *DataChangeRecord
+	f := ConsumerFunc(func(ctx context.Context, r *DataChangeRecord) error {
+		called = true
+		gotRecord = r
+		return nil
+	})
+
+	record := &DataChangeRecord{TableName: "Users"}
+	err := f.Consume(context.Background(), record)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("ConsumerFunc was not called")
+	}
+	if gotRecord.TableName != "Users" {
+		t.Errorf("TableName = %v, want %q", gotRecord.TableName, "Users")
+	}
+}
+
+func TestConsumerFunc_Error(t *testing.T) {
+	testErr := errors.New("consume error")
+	f := ConsumerFunc(func(ctx context.Context, r *DataChangeRecord) error {
+		return testErr
+	})
+
+	err := f.Consume(context.Background(), &DataChangeRecord{})
+	if !errors.Is(err, testErr) {
+		t.Errorf("err = %v, want %v", err, testErr)
+	}
+}
+
+func TestSubscriber_fail(t *testing.T) {
+	t.Run("first error is recorded", func(t *testing.T) {
+		ctx, cancel := context.WithCancelCause(context.Background())
+		defer cancel(nil)
+
+		s := &Subscriber{
+			ctx:    ctx,
+			cancel: cancel,
+			done:   make(chan struct{}),
+		}
+
+		err1 := errors.New("first error")
+		err2 := errors.New("second error")
+
+		s.fail(err1)
+		s.fail(err2)
+
+		if s.err != err1 {
+			t.Errorf("err = %v, want %v", s.err, err1)
+		}
+	})
+
+	t.Run("fail cancels context", func(t *testing.T) {
+		ctx, cancel := context.WithCancelCause(context.Background())
+		defer cancel(nil)
+
+		s := &Subscriber{
+			ctx:    ctx,
+			cancel: cancel,
+			done:   make(chan struct{}),
+		}
+
+		testErr := errors.New("fail error")
+		s.fail(testErr)
+
+		select {
+		case <-ctx.Done():
+			// コンテキストがキャンセルされた。
+		default:
+			t.Error("context was not canceled after fail")
+		}
+	})
+}
+
+func TestSubscriber_detectAndSchedulePartitions(t *testing.T) {
+	t.Run("error from GetSchedulablePartitions is propagated", func(t *testing.T) {
+		storageErr := errors.New("get schedulable error")
+		storage := &mockPartitionStorage{
+			getUnfinishedMinWatermarkPartitionFunc: func(ctx context.Context) (*PartitionMetadata, error) {
+				return &PartitionMetadata{
+					PartitionToken: "test",
+					Watermark:      time.Now(),
+				}, nil
+			},
+			getSchedulablePartitionsFunc: func(ctx context.Context, minWatermark time.Time) ([]*PartitionMetadata, error) {
+				return nil, storageErr
+			},
+		}
+
+		s := newTestSubscriber(storage, 100*time.Millisecond)
+		err := s.detectAndSchedulePartitions()
+		if !errors.Is(err, storageErr) {
+			t.Errorf("err = %v, want %v", err, storageErr)
+		}
+	})
+
+	t.Run("error from GetUnfinishedMinWatermarkPartition is propagated", func(t *testing.T) {
+		storageErr := errors.New("get min watermark error")
+		storage := &mockPartitionStorage{
+			getUnfinishedMinWatermarkPartitionFunc: func(ctx context.Context) (*PartitionMetadata, error) {
+				return nil, storageErr
+			},
+		}
+
+		s := newTestSubscriber(storage, 100*time.Millisecond)
+		err := s.detectAndSchedulePartitions()
+		if !errors.Is(err, storageErr) {
+			t.Errorf("err = %v, want %v", err, storageErr)
+		}
+	})
+
+	t.Run("error from UpdateToScheduled is propagated", func(t *testing.T) {
+		storageErr := errors.New("update scheduled error")
+		storage := &mockPartitionStorage{
+			getUnfinishedMinWatermarkPartitionFunc: func(ctx context.Context) (*PartitionMetadata, error) {
+				return &PartitionMetadata{
+					PartitionToken: "test",
+					Watermark:      time.Now(),
+				}, nil
+			},
+			getSchedulablePartitionsFunc: func(ctx context.Context, minWatermark time.Time) ([]*PartitionMetadata, error) {
+				return []*PartitionMetadata{
+					{PartitionToken: "child-1"},
+				}, nil
+			},
+			updateToScheduledFunc: func(ctx context.Context, tokens []string) error {
+				return storageErr
+			},
+		}
+
+		s := newTestSubscriber(storage, 100*time.Millisecond)
+		err := s.detectAndSchedulePartitions()
+		if !errors.Is(err, storageErr) {
+			t.Errorf("err = %v, want %v", err, storageErr)
+		}
+	})
+
+	t.Run("returns nil when no schedulable partitions", func(t *testing.T) {
+		storage := &mockPartitionStorage{
+			getUnfinishedMinWatermarkPartitionFunc: func(ctx context.Context) (*PartitionMetadata, error) {
+				return &PartitionMetadata{
+					PartitionToken: "test",
+					Watermark:      time.Now(),
+				}, nil
+			},
+			getSchedulablePartitionsFunc: func(ctx context.Context, minWatermark time.Time) ([]*PartitionMetadata, error) {
+				return nil, nil
+			},
+		}
+
+		s := newTestSubscriber(storage, 100*time.Millisecond)
+		err := s.detectAndSchedulePartitions()
+		if err != nil {
+			t.Errorf("err = %v, want nil", err)
+		}
+	})
+}
+
+func TestSubscriber_initialize(t *testing.T) {
+	t.Run("skips root initialization when unfinished partition exists", func(t *testing.T) {
+		initCalled := false
+		storage := &mockPartitionStorage{
+			getUnfinishedMinWatermarkPartitionFunc: func(ctx context.Context) (*PartitionMetadata, error) {
+				return &PartitionMetadata{
+					PartitionToken: "existing",
+					Watermark:      time.Now(),
+				}, nil
+			},
+			initializeRootPartitionFunc: func(ctx context.Context, start, end time.Time, hb time.Duration) error {
+				initCalled = true
+				return nil
+			},
+		}
+
+		s := newTestSubscriber(storage, 100*time.Millisecond)
+		err := s.initialize()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if initCalled {
+			t.Error("InitializeRootPartition should not be called when unfinished partition exists")
+		}
+	})
+
+	t.Run("returns error when InitializeRootPartition fails", func(t *testing.T) {
+		initErr := errors.New("init error")
+		storage := &mockPartitionStorage{
+			getUnfinishedMinWatermarkPartitionFunc: func(ctx context.Context) (*PartitionMetadata, error) {
+				return nil, nil
+			},
+			initializeRootPartitionFunc: func(ctx context.Context, start, end time.Time, hb time.Duration) error {
+				return initErr
+			},
+		}
+
+		s := newTestSubscriber(storage, 100*time.Millisecond)
+		err := s.initialize()
+		if !errors.Is(err, initErr) {
+			t.Errorf("err = %v, want %v", err, initErr)
+		}
+	})
+}
+
+func TestSubscriber_resumeInterruptedPartitions(t *testing.T) {
+	t.Run("returns error when GetInterruptedPartitions fails", func(t *testing.T) {
+		storageErr := errors.New("interrupted error")
+		storage := &mockPartitionStorage{
+			getInterruptedPartitionsFunc: func(ctx context.Context) ([]*PartitionMetadata, error) {
+				return nil, storageErr
+			},
+		}
+
+		s := newTestSubscriber(storage, 100*time.Millisecond)
+		err := s.resumeInterruptedPartitions()
+		if !errors.Is(err, storageErr) {
+			t.Errorf("err = %v, want %v", err, storageErr)
+		}
+	})
+}
+
+func TestSubscriber_drain(t *testing.T) {
+	t.Run("drain is idempotent", func(t *testing.T) {
+		s := &Subscriber{
+			done: make(chan struct{}),
+		}
+
+		// drain は複数回呼んでも安全。
+		ch1 := s.drain()
+		ch2 := s.drain()
+
+		// 同じチャネルが返されるはず。
+		if ch1 != ch2 {
+			t.Error("drain() returned different channels")
+		}
+	})
+}
+
+func TestSubscriber_MainLoopDetectError(t *testing.T) {
+	t.Run("detectAndSchedulePartitions error during main loop triggers fail", func(t *testing.T) {
+		callCount := 0
+		storageErr := errors.New("detect error")
+		storage := &mockPartitionStorage{
+			getUnfinishedMinWatermarkPartitionFunc: func(ctx context.Context) (*PartitionMetadata, error) {
+				callCount++
+				if callCount == 1 {
+					// initialize ではパーティションを返す。
+					return &PartitionMetadata{
+						PartitionToken: "test",
+						Watermark:      time.Now(),
+					}, nil
+				}
+				// メインループ中にエラーを返す。
+				return nil, storageErr
+			},
+		}
+
+		subscriber := newTestSubscriber(storage, 50*time.Millisecond)
+		err := subscriber.Subscribe()
+		if !errors.Is(err, storageErr) {
+			t.Errorf("Subscribe() = %v, want %v", err, storageErr)
+		}
+	})
+}
+
+func TestSubscriber_BaseContextCancellation(t *testing.T) {
+	t.Run("base context cancellation stops subscriber", func(t *testing.T) {
+		storage := &mockPartitionStorage{
+			getUnfinishedMinWatermarkPartitionFunc: func(ctx context.Context) (*PartitionMetadata, error) {
+				return &PartitionMetadata{
+					PartitionToken: "test",
+					Watermark:      time.Now(),
+				}, nil
+			},
+			getSchedulablePartitionsFunc: func(ctx context.Context, minWatermark time.Time) ([]*PartitionMetadata, error) {
+				return nil, nil
+			},
+		}
+
+		baseCtx, baseCancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancelCause(baseCtx)
+
+		subscriber := &Subscriber{
+			streamName:                 "test-stream",
+			partitionStorage:           storage,
+			consumer:                   ConsumerFunc(func(ctx context.Context, record *DataChangeRecord) error { return nil }),
+			startTimestamp:             nowFunc(),
+			endTimestamp:               defaultEndTimestamp,
+			heartbeatInterval:          defaultHeartbeatInterval,
+			maxInflight:                defaultMaxInflight,
+			partitionDiscoveryInterval: 50 * time.Millisecond,
+			readers:                    make(map[string]*partitionReader),
+			ctx:                        ctx,
+			cancel:                     cancel,
+			done:                       make(chan struct{}),
+		}
+
+		runDone := make(chan error, 1)
+		go func() {
+			runDone <- subscriber.Subscribe()
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+		baseCancel()
+
+		select {
+		case err := <-runDone:
+			// ベースコンテキストのキャンセルはエラーなし(またはcontext.Canceled)。
+			if err != nil && !errors.Is(err, context.Canceled) {
+				t.Errorf("Subscribe() = %v, want nil or context.Canceled", err)
+			}
+		case <-time.After(500 * time.Millisecond):
+			t.Error("Subscribe() did not return after base context cancellation")
+		}
+	})
+}
+
+func TestSubscriber_ResumeError_FromSubscribe(t *testing.T) {
+	t.Run("resume interrupted partitions error is returned from Subscribe", func(t *testing.T) {
+		resumeErr := errors.New("resume error")
+		storage := &mockPartitionStorage{
+			// initialize は正常に完了させる。
+			getUnfinishedMinWatermarkPartitionFunc: func(ctx context.Context) (*PartitionMetadata, error) {
+				return nil, nil
+			},
+			initializeRootPartitionFunc: func(ctx context.Context, start, end time.Time, hb time.Duration) error {
+				return nil
+			},
+			getInterruptedPartitionsFunc: func(ctx context.Context) ([]*PartitionMetadata, error) {
+				return nil, resumeErr
+			},
+		}
+
+		subscriber := newTestSubscriber(storage, 100*time.Millisecond)
+		err := subscriber.Subscribe()
+		if !errors.Is(err, resumeErr) {
+			t.Errorf("Subscribe() = %v, want %v", err, resumeErr)
+		}
+	})
+}
+
+func TestSubscriber_Close_WithReaders(t *testing.T) {
+	t.Run("close force-closes all active readers", func(t *testing.T) {
+		storage := &mockPartitionStorage{
+			getUnfinishedMinWatermarkPartitionFunc: func(ctx context.Context) (*PartitionMetadata, error) {
+				return &PartitionMetadata{
+					PartitionToken: "test",
+					Watermark:      time.Now(),
+				}, nil
+			},
+			getSchedulablePartitionsFunc: func(ctx context.Context, minWatermark time.Time) ([]*PartitionMetadata, error) {
+				return nil, nil
+			},
+		}
+
+		subscriber := newTestSubscriber(storage, 100*time.Millisecond)
+
+		// ダミーリーダーを注入してインフライトレコードを追加する。
+		tracker := newInflightTracker(10)
+		if err := tracker.acquire(context.Background()); err != nil {
+			t.Fatalf("acquire failed: %v", err)
+		}
+		tracker.add(time.Now())
+		reader := &partitionReader{
+			partitionToken: "test-reader",
+			tracker:        tracker,
+		}
+		subscriber.readers["test-reader"] = reader
+
+		runDone := make(chan error, 1)
+		go func() {
+			runDone <- subscriber.Subscribe()
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+
+		// Close はリーダーを強制終了する。
+		subscriber.Close()
+
+		select {
+		case err := <-runDone:
+			if !errors.Is(err, ErrClosed) {
+				t.Errorf("Subscribe() = %v, want ErrClosed", err)
+			}
+		case <-time.After(500 * time.Millisecond):
+			t.Error("Subscribe() did not return after Close")
+		}
+
+		// リーダーのトラッカーが閉じているはず。
+		if err := tracker.acquire(context.Background()); err != errTrackerClosed {
+			t.Errorf("tracker.acquire() = %v, want errTrackerClosed", err)
+		}
+	})
+}
+
 func TestNewSubscriber_Validation(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -28,11 +28,49 @@ const (
 	testDatabasePath = testInstancePath + "/databases/" + testDatabaseID
 )
 
+// spannerEmulatorAvailable indicates whether the Spanner emulator is running.
+// Spanner tests call requireEmulator to skip when the emulator is not available.
+var spannerEmulatorAvailable bool
+
 func TestMain(m *testing.M) {
-	close := launchEmulatorOnDocker()
+	cleanup, err := tryLaunchEmulatorOnDocker()
+	if err != nil {
+		log.Printf("Spanner emulator not available: %v. Skipping Spanner tests.", err)
+	} else {
+		spannerEmulatorAvailable = true
+	}
+
 	code := m.Run()
-	close()
+
+	if cleanup != nil {
+		cleanup()
+	}
 	os.Exit(code)
+}
+
+// requireEmulator skips the test if the Spanner emulator is not available.
+func requireEmulator(t *testing.T) {
+	t.Helper()
+	if !spannerEmulatorAvailable {
+		t.Skip("Spanner emulator not available")
+	}
+}
+
+// tryLaunchEmulatorOnDocker attempts to launch the emulator and returns a cleanup function.
+// It recovers from panics caused by Docker not being available.
+func tryLaunchEmulatorOnDocker() (cleanup func(), err error) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("%v", r)
+			}
+		}()
+		cleanup = launchEmulatorOnDocker()
+	}()
+	<-done
+	return cleanup, err
 }
 
 func launchEmulatorOnDocker() func() {
@@ -173,6 +211,7 @@ func setupSpannerPartitionStorage(t *testing.T, ctx context.Context) *SpannerPar
 }
 
 func TestSpannerPartitionStorage_InitializeRootPartition(t *testing.T) {
+	requireEmulator(t)
 	ctx := context.Background()
 	storage := setupSpannerPartitionStorage(t, ctx)
 
@@ -236,6 +275,7 @@ func TestSpannerPartitionStorage_InitializeRootPartition(t *testing.T) {
 }
 
 func TestSpannerPartitionStorage_Read(t *testing.T) {
+	requireEmulator(t)
 	ctx := context.Background()
 	storage := setupSpannerPartitionStorage(t, ctx)
 
@@ -316,6 +356,7 @@ func TestSpannerPartitionStorage_Read(t *testing.T) {
 }
 
 func TestSpannerPartitionStorage_AddChildPartitions(t *testing.T) {
+	requireEmulator(t)
 	ctx := context.Background()
 	storage := setupSpannerPartitionStorage(t, ctx)
 
@@ -384,6 +425,7 @@ func TestSpannerPartitionStorage_AddChildPartitions(t *testing.T) {
 }
 
 func TestSpannerPartitionStorage_Update(t *testing.T) {
+	requireEmulator(t)
 	ctx := context.Background()
 	storage := setupSpannerPartitionStorage(t, ctx)
 
