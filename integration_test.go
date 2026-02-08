@@ -278,6 +278,7 @@ func TestSubscriber_DataChangeRecord(t *testing.T) {
 		fmt.Sprintf(`CREATE TABLE %s (
 			Bool            BOOL,
 			Int64           INT64,
+			Float32         FLOAT32,
 			Float64         FLOAT64,
 			Timestamp       TIMESTAMP,
 			Date            DATE,
@@ -287,6 +288,7 @@ func TestSubscriber_DataChangeRecord(t *testing.T) {
 			Json            JSON,
 			BoolArray       ARRAY<BOOL>,
 			Int64Array      ARRAY<INT64>,
+			Float32Array    ARRAY<FLOAT32>,
 			Float64Array    ARRAY<FLOAT64>,
 			TimestampArray  ARRAY<TIMESTAMP>,
 			DateArray       ARRAY<DATE>,
@@ -330,9 +332,9 @@ func TestSubscriber_DataChangeRecord(t *testing.T) {
 	// 1. INSERT
 	if _, err := spannerClient.ReadWriteTransaction(ctx, func(ctx context.Context, tx *spanner.ReadWriteTransaction) error {
 		_, err := tx.Update(ctx, spanner.NewStatement(fmt.Sprintf(`INSERT INTO %s
-			(Bool, Int64, Float64, Timestamp, Date, String, Bytes, Numeric, Json, BoolArray, Int64Array, Float64Array, TimestampArray, DateArray, StringArray, BytesArray, NumericArray, JsonArray)
+			(Bool, Int64, Float32, Float64, Timestamp, Date, String, Bytes, Numeric, Json, BoolArray, Int64Array, Float32Array, Float64Array, TimestampArray, DateArray, StringArray, BytesArray, NumericArray, JsonArray)
 		VALUES (
-			TRUE, 1, 0.5,
+			TRUE, 1, CAST(0.25 AS FLOAT32), 0.5,
 			'2023-12-31T23:59:59.999999999Z',
 			'2023-01-01',
 			'string',
@@ -341,6 +343,7 @@ func TestSubscriber_DataChangeRecord(t *testing.T) {
 			JSON '{"name":"foobar"}',
 			[TRUE, FALSE],
 			[1, 2],
+			[CAST(0.25 AS FLOAT32), CAST(0.75 AS FLOAT32)],
 			[0.5, 0.25],
 			[TIMESTAMP '2023-12-31T23:59:59.999999999Z', TIMESTAMP '2023-01-01T00:00:00Z'],
 			[DATE '2023-01-01', DATE '2023-02-01'],
@@ -426,10 +429,13 @@ func TestSubscriber_DataChangeRecord(t *testing.T) {
 	if insertNewValues["Numeric"] != "123.456" {
 		t.Errorf("INSERT NewValues[\"Numeric\"] = %v, want \"123.456\"", insertNewValues["Numeric"])
 	}
+	if insertNewValues["Float32"] != 0.25 {
+		t.Errorf("INSERT NewValues[\"Float32\"] = %v, want 0.25", insertNewValues["Float32"])
+	}
 
 	// INSERT の ColumnTypes にすべてのカラムが含まれることを検証する。
-	if len(insertRecord.ColumnTypes) != 18 {
-		t.Errorf("INSERT ColumnTypes has %d entries, want 18", len(insertRecord.ColumnTypes))
+	if len(insertRecord.ColumnTypes) != 20 {
+		t.Errorf("INSERT ColumnTypes has %d entries, want 20", len(insertRecord.ColumnTypes))
 	}
 
 	// UPDATE レコードの NewValues/OldValues を検証する。
