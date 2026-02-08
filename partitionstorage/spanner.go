@@ -6,8 +6,6 @@ import (
 	"time"
 
 	"cloud.google.com/go/spanner"
-	database "cloud.google.com/go/spanner/admin/database/apiv1"
-	"cloud.google.com/go/spanner/admin/database/apiv1/databasepb"
 	"github.com/toga4/spream"
 	"google.golang.org/api/iterator"
 	"google.golang.org/grpc/codes"
@@ -43,57 +41,6 @@ const (
 	columnRunningAt       = "RunningAt"
 	columnFinishedAt      = "FinishedAt"
 )
-
-// CreateTableIfNotExists creates the partition metadata table if it does not exist.
-func (s *SpannerPartitionStorage) CreateTableIfNotExists(ctx context.Context) error {
-	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx)
-	if err != nil {
-		return err
-	}
-	defer databaseAdminClient.Close()
-
-	stmt := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %[1]s (
-  %[2]s STRING(MAX) NOT NULL,
-  %[3]s ARRAY<STRING(MAX)> NOT NULL,
-  %[4]s TIMESTAMP NOT NULL,
-  %[5]s TIMESTAMP NOT NULL,
-  %[6]s INT64 NOT NULL,
-  %[7]s STRING(MAX) NOT NULL,
-  %[8]s TIMESTAMP NOT NULL,
-  %[9]s TIMESTAMP NOT NULL OPTIONS (allow_commit_timestamp=true),
-  %[10]s TIMESTAMP OPTIONS (allow_commit_timestamp=true),
-  %[11]s TIMESTAMP OPTIONS (allow_commit_timestamp=true),
-  %[12]s TIMESTAMP OPTIONS (allow_commit_timestamp=true),
-) PRIMARY KEY (%[2]s), ROW DELETION POLICY (OLDER_THAN(%[12]s, INTERVAL 1 DAY))`,
-		s.tableName,
-		columnPartitionToken,
-		columnParentTokens,
-		columnStartTimestamp,
-		columnEndTimestamp,
-		columnHeartbeatMillis,
-		columnState,
-		columnWatermark,
-		columnCreatedAt,
-		columnScheduledAt,
-		columnRunningAt,
-		columnFinishedAt,
-	)
-
-	req := &databasepb.UpdateDatabaseDdlRequest{
-		Database:   s.client.DatabaseName(),
-		Statements: []string{stmt},
-	}
-	op, err := databaseAdminClient.UpdateDatabaseDdl(ctx, req)
-	if err != nil {
-		return err
-	}
-
-	if err := op.Wait(ctx); err != nil {
-		return err
-	}
-
-	return nil
-}
 
 func (s *SpannerPartitionStorage) GetUnfinishedMinWatermarkPartition(ctx context.Context) (*spream.PartitionMetadata, error) {
 	stmt := spanner.Statement{

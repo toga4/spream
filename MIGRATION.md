@@ -164,6 +164,32 @@ This approach applies the priority to all operations made by the client:
 - `QueryOptions` applies to read operations (change stream queries, partition metadata queries)
 - `ApplyOptions` applies to write operations (partition metadata updates)
 
+### SpannerPartitionStorage: CreateTableIfNotExists Removed
+
+`SpannerPartitionStorage.CreateTableIfNotExists` has been removed. Manage the partition metadata table schema yourself using your preferred schema management tool (Terraform, migration tools, manual DDL, etc.).
+
+A reference DDL is provided at [`partitionstorage/schema.sql`](partitionstorage/schema.sql). Adjust the table name and index names according to your naming conventions.
+
+**Before (v0.2.x):**
+```go
+storage := partitionstorage.NewSpanner(client, "PartitionMetadata")
+if err := storage.CreateTableIfNotExists(ctx); err != nil {
+    log.Fatal(err)
+}
+```
+
+**After (v0.3.0):**
+```go
+// Create the table using your own schema management tool before starting the subscriber.
+// See partitionstorage/schema.sql for the required DDL.
+storage := partitionstorage.NewSpanner(client, "PartitionMetadata")
+```
+
+If you're using the CLI, pass `--create-table` flag to automatically create the table:
+```console
+$ spream -d ... -s ... -t PartitionMetadata --create-table
+```
+
 ### SpannerPartitionStorage Options
 
 The `WithRequestPriority` option (and the typo `WithRequestPriotiry`) has been removed. Configure the priority at the `spanner.Client` level using `NewClientWithConfig`, as shown above.

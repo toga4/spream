@@ -27,11 +27,9 @@ func ExampleNewSubscriber_withOptions() {
 	}
 	defer spannerClient.Close()
 
+	// Create partition metadata table before use. See partitionstorage/schema.sql for DDL.
 	partitionMetadataTableName := "PartitionMetadata_FooStream"
 	partitionStorage := partitionstorage.NewSpanner(spannerClient, partitionMetadataTableName)
-	if err := partitionStorage.CreateTableIfNotExists(ctx); err != nil {
-		panic(err)
-	}
 
 	subscriber, err := spream.NewSubscriber(&spream.Config{
 		SpannerClient:     spannerClient,

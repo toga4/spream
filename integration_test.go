@@ -145,6 +145,38 @@ func createDatabase(ctx context.Context, parentInstanceName string) (string, err
 	return resp.Name, nil
 }
 
+func createPartitionMetadataTable(ctx context.Context, databaseName, tableName string) error {
+	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx)
+	if err != nil {
+		return err
+	}
+	defer databaseAdminClient.Close()
+
+	op, err := databaseAdminClient.UpdateDatabaseDdl(ctx, &databasepb.UpdateDatabaseDdlRequest{
+		Database: databaseName,
+		Statements: []string{
+			fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+  PartitionToken STRING(MAX) NOT NULL,
+  ParentTokens ARRAY<STRING(MAX)> NOT NULL,
+  StartTimestamp TIMESTAMP NOT NULL,
+  EndTimestamp TIMESTAMP NOT NULL,
+  HeartbeatMillis INT64 NOT NULL,
+  State STRING(MAX) NOT NULL,
+  Watermark TIMESTAMP NOT NULL,
+  CreatedAt TIMESTAMP NOT NULL OPTIONS (allow_commit_timestamp=true),
+  ScheduledAt TIMESTAMP OPTIONS (allow_commit_timestamp=true),
+  RunningAt TIMESTAMP OPTIONS (allow_commit_timestamp=true),
+  FinishedAt TIMESTAMP OPTIONS (allow_commit_timestamp=true),
+) PRIMARY KEY (PartitionToken),
+  ROW DELETION POLICY (OLDER_THAN(FinishedAt, INTERVAL 1 DAY))`, tableName),
+		},
+	})
+	if err != nil {
+		return err
+	}
+	return op.Wait(ctx)
+}
+
 func createTableAndChangeStream(ctx context.Context, databaseName string) (string, string, error) {
 	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx)
 	if err != nil {
@@ -397,13 +429,15 @@ func TestSubscriber(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			partitionStorage := partitionstorage.NewSpanner(spannerClient, generateUniqueName("partition"))
+			partitionTableName := generateUniqueName("partition")
 
 			t.Log("Creating metadata table...")
-			if err := partitionStorage.CreateTableIfNotExists(ctx); err != nil {
+			if err := createPartitionMetadataTable(ctx, spannerClient.DatabaseName(), partitionTableName); err != nil {
 				t.Errorf("Failed to create metadata table: %v", err)
 				return
 			}
+
+			partitionStorage := partitionstorage.NewSpanner(spannerClient, partitionTableName)
 
 			consumer := &consumer{}
 			subscriber, err := spream.NewSubscriber(&spream.Config{

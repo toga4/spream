@@ -17,7 +17,6 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 	"github.com/toga4/spream"
-	"google.golang.org/api/iterator"
 )
 
 const (
@@ -27,7 +26,6 @@ const (
 	testProjectPath  = "projects/" + testProjectID
 	testInstancePath = testProjectPath + "/instances/" + testInstanceID
 	testDatabasePath = testInstancePath + "/databases/" + testDatabaseID
-	testTableName    = "PartitionMetadata"
 )
 
 func TestMain(m *testing.M) {
@@ -122,60 +120,36 @@ func createDatabase(ctx context.Context) error {
 	return err
 }
 
-func TestSpannerPartitionStorage_CreateTableIfNotExists(t *testing.T) {
-	ctx := context.Background()
-
-	client, err := spanner.NewClient(ctx, testDatabasePath)
+func createTable(ctx context.Context, databaseName, tableName string) error {
+	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx)
 	if err != nil {
-		t.Error(err)
-		return
+		return err
 	}
-	defer client.Close()
+	defer databaseAdminClient.Close()
 
-	storage := &SpannerPartitionStorage{
-		client:    client,
-		tableName: t.Name(),
-	}
-
-	if err := storage.CreateTableIfNotExists(ctx); err != nil {
-		t.Error(err)
-		return
-	}
-
-	iter := client.Single().Read(ctx, storage.tableName, spanner.AllKeys(), []string{columnPartitionToken})
-	defer iter.Stop()
-
-	if _, err := iter.Next(); err != iterator.Done {
-		t.Errorf("Read from %s after SpannerPartitionStorage.CreateTableIfNotExists() = %v, want %v", storage.tableName, err, iterator.Done)
-	}
-
-	existsTable, err := existsTable(ctx, client, storage.tableName)
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	if !existsTable {
-		t.Errorf("SpannerPartitionStorage.existsTable() = %v, want %v", existsTable, false)
-	}
-}
-
-func existsTable(ctx context.Context, client *spanner.Client, tableName string) (bool, error) {
-	iter := client.Single().Query(ctx, spanner.Statement{
-		SQL: "SELECT 1 FROM information_schema.tables WHERE table_catalog = '' AND table_schema = '' AND table_name = @tableName",
-		Params: map[string]any{
-			"tableName": tableName,
+	op, err := databaseAdminClient.UpdateDatabaseDdl(ctx, &databasepb.UpdateDatabaseDdlRequest{
+		Database: databaseName,
+		Statements: []string{
+			fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+  PartitionToken STRING(MAX) NOT NULL,
+  ParentTokens ARRAY<STRING(MAX)> NOT NULL,
+  StartTimestamp TIMESTAMP NOT NULL,
+  EndTimestamp TIMESTAMP NOT NULL,
+  HeartbeatMillis INT64 NOT NULL,
+  State STRING(MAX) NOT NULL,
+  Watermark TIMESTAMP NOT NULL,
+  CreatedAt TIMESTAMP NOT NULL OPTIONS (allow_commit_timestamp=true),
+  ScheduledAt TIMESTAMP OPTIONS (allow_commit_timestamp=true),
+  RunningAt TIMESTAMP OPTIONS (allow_commit_timestamp=true),
+  FinishedAt TIMESTAMP OPTIONS (allow_commit_timestamp=true),
+) PRIMARY KEY (PartitionToken),
+  ROW DELETION POLICY (OLDER_THAN(FinishedAt, INTERVAL 1 DAY))`, tableName),
 		},
 	})
-	defer iter.Stop()
-
-	if _, err := iter.Next(); err != nil {
-		if err == iterator.Done {
-			return false, nil
-		}
-		return false, err
+	if err != nil {
+		return err
 	}
-
-	return true, nil
+	return op.Wait(ctx)
 }
 
 func setupSpannerPartitionStorage(t *testing.T, ctx context.Context) *SpannerPartitionStorage {
@@ -190,17 +164,12 @@ func setupSpannerPartitionStorage(t *testing.T, ctx context.Context) *SpannerPar
 		client.Close()
 	})
 
-	storage := &SpannerPartitionStorage{
-		client:    client,
-		tableName: t.Name(),
-	}
-
-	if err := storage.CreateTableIfNotExists(ctx); err != nil {
+	if err := createTable(ctx, testDatabasePath, t.Name()); err != nil {
 		t.Error(err)
-		return storage
+		return nil
 	}
 
-	return storage
+	return NewSpanner(client, t.Name())
 }
 
 func TestSpannerPartitionStorage_InitializeRootPartition(t *testing.T) {

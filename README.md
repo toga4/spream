@@ -55,11 +55,9 @@ func main() {
 	}
 	defer spannerClient.Close()
 
+	// Create partition metadata table before use. See partitionstorage/schema.sql for DDL.
 	partitionMetadataTableName := "PartitionMetadata_FooStream"
 	partitionStorage := partitionstorage.NewSpanner(spannerClient, partitionMetadataTableName)
-	if err := partitionStorage.CreateTableIfNotExists(ctx); err != nil {
-		panic(err)
-	}
 
 	changeStreamName := "FooStream"
 	subscriber := spream.NewSubscriber(spannerClient, changeStreamName, partitionStorage)
@@ -107,6 +105,7 @@ Options:
   --heartbeat-interval          Heartbeat interval with time.Duration format  (default: 10s)
   --priority [high|medium|low]  Request priority for Cloud Spanner            (default: high)
   --metadata-database           Database name of partition metadata table     (default: same as database option)
+  --create-table                Create partition metadata table if not exists (default: false)
   -h, --help                    Print this message
 ```
 

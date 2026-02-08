@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -9,14 +10,20 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"time"
 
 	"cloud.google.com/go/spanner"
+	database "cloud.google.com/go/spanner/admin/database/apiv1"
+	"cloud.google.com/go/spanner/admin/database/apiv1/databasepb"
 	"cloud.google.com/go/spanner/apiv1/spannerpb"
 	"github.com/toga4/spream"
 	"github.com/toga4/spream/partitionstorage"
 )
+
+//go:embed schema.sql
+var schemaDDLTemplate string
 
 type flags struct {
 	database          string
@@ -27,6 +34,7 @@ type flags struct {
 	priority          spannerpb.RequestOptions_Priority
 	metadataTableName string
 	metadataDatabase  string
+	createTable       bool
 }
 
 const (
@@ -51,6 +59,7 @@ Options:
   --heartbeat-interval          Heartbeat interval with time.Duration format  (default: 10s)
   --priority [high|medium|low]  Request priority for Cloud Spanner            (default: high)
   --metadata-database           Database name of partition metadata table     (default: same as database option)
+  --create-table                Create partition metadata table if not exists (default: false)
   -h, --help                    Print this message
 
 `, cmd)
@@ -65,6 +74,8 @@ Options:
 	fs.StringVar(&flags.metadataTableName, "metadata-table", "", "")
 	fs.StringVar(&flags.metadataDatabase, "metadata-database", flags.database, "")
 	fs.DurationVar(&flags.heartbeatInterval, "heartbeat-interval", 10*time.Second, "")
+
+	fs.BoolVar(&flags.createTable, "create-table", false, "")
 
 	var start, end, priority string
 	fs.StringVar(&start, "start", "", "")
@@ -158,12 +169,15 @@ func main() {
 			os.Exit(1)
 		}
 		defer metadataSpannerClient.Close()
-		ps := partitionstorage.NewSpanner(metadataSpannerClient, flags.metadataTableName)
-		if err := ps.CreateTableIfNotExists(ctx); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+
+		if flags.createTable {
+			if err := createPartitionMetadataTable(ctx, metadataSpannerClient.DatabaseName(), flags.metadataTableName); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
 		}
-		partitionStorage = ps
+
+		partitionStorage = partitionstorage.NewSpanner(metadataSpannerClient, flags.metadataTableName)
 	}
 
 	cfg := &spream.Config{
@@ -202,4 +216,32 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func createPartitionMetadataTable(ctx context.Context, databaseName, tableName string) error {
+	adminClient, err := database.NewDatabaseAdminClient(ctx)
+	if err != nil {
+		return err
+	}
+	defer adminClient.Close()
+
+	ddl := fmt.Sprintf(schemaDDLTemplate, tableName)
+
+	var statements []string
+	for _, s := range strings.Split(ddl, ";") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			statements = append(statements, s)
+		}
+	}
+
+	op, err := adminClient.UpdateDatabaseDdl(ctx, &databasepb.UpdateDatabaseDdlRequest{
+		Database:   databaseName,
+		Statements: statements,
+	})
+	if err != nil {
+		return err
+	}
+
+	return op.Wait(ctx)
 }
