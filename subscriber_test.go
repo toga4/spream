@@ -534,7 +534,7 @@ func TestSubscriber_fail(t *testing.T) {
 
 		select {
 		case <-ctx.Done():
-			// コンテキストがキャンセルされた。
+			// Context was canceled.
 		default:
 			t.Error("context was not canceled after fail")
 		}
@@ -693,11 +693,11 @@ func TestSubscriber_drain(t *testing.T) {
 			done: make(chan struct{}),
 		}
 
-		// drain は複数回呼んでも安全。
+		// drain is safe to call multiple times.
 		ch1 := s.drain()
 		ch2 := s.drain()
 
-		// 同じチャネルが返されるはず。
+		// The same channel should be returned.
 		if ch1 != ch2 {
 			t.Error("drain() returned different channels")
 		}
@@ -712,13 +712,13 @@ func TestSubscriber_MainLoopDetectError(t *testing.T) {
 			getUnfinishedMinWatermarkPartitionFunc: func(ctx context.Context) (*PartitionMetadata, error) {
 				callCount++
 				if callCount == 1 {
-					// initialize ではパーティションを返す。
+					// Return a partition during initialization.
 					return &PartitionMetadata{
 						PartitionToken: "test",
 						Watermark:      time.Now(),
 					}, nil
 				}
-				// メインループ中にエラーを返す。
+				// Return an error during the main loop.
 				return nil, storageErr
 			},
 		}
@@ -773,7 +773,7 @@ func TestSubscriber_BaseContextCancellation(t *testing.T) {
 
 		select {
 		case err := <-runDone:
-			// ベースコンテキストのキャンセルはエラーなし(またはcontext.Canceled)。
+			// Base context cancellation results in no error (or context.Canceled).
 			if err != nil {
 				if diff := cmp.Diff(context.Canceled, err, cmpopts.EquateErrors()); diff != "" {
 					t.Errorf("Subscribe() error mismatch (-want +got):\n%s", diff)
@@ -789,7 +789,7 @@ func TestSubscriber_ResumeError_FromSubscribe(t *testing.T) {
 	t.Run("resume interrupted partitions error is returned from Subscribe", func(t *testing.T) {
 		resumeErr := errors.New("resume error")
 		storage := &mockPartitionStorage{
-			// initialize は正常に完了させる。
+			// Let initialization complete successfully.
 			getUnfinishedMinWatermarkPartitionFunc: func(ctx context.Context) (*PartitionMetadata, error) {
 				return nil, nil
 			},
@@ -825,7 +825,7 @@ func TestSubscriber_Close_WithReaders(t *testing.T) {
 
 		subscriber := newTestSubscriber(storage, 100*time.Millisecond)
 
-		// ダミーリーダーを注入してインフライトレコードを追加する。
+		// Inject a dummy reader and add an in-flight record.
 		tracker := newInflightTracker(10)
 		if err := tracker.acquire(context.Background()); err != nil {
 			t.Fatalf("acquire failed: %v", err)
@@ -844,7 +844,7 @@ func TestSubscriber_Close_WithReaders(t *testing.T) {
 
 		time.Sleep(50 * time.Millisecond)
 
-		// Close はリーダーを強制終了する。
+		// Close force-terminates the readers.
 		subscriber.Close()
 
 		select {
@@ -856,7 +856,7 @@ func TestSubscriber_Close_WithReaders(t *testing.T) {
 			t.Error("Subscribe() did not return after Close")
 		}
 
-		// リーダーのトラッカーが閉じているはず。
+		// The reader's tracker should be closed.
 		acquireErr := tracker.acquire(context.Background())
 		if diff := cmp.Diff(errTrackerClosed, acquireErr, cmpopts.EquateErrors()); diff != "" {
 			t.Errorf("tracker.acquire() error mismatch (-want +got):\n%s", diff)

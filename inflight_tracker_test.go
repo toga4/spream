@@ -244,10 +244,10 @@ func TestInflightTracker_ConcurrentAccess(t *testing.T) {
 func TestInflightTracker_CloseIdempotent(t *testing.T) {
 	tracker := newInflightTracker(3)
 
-	// 1回目のclose。
+	// First close.
 	tracker.close()
 
-	// 2回目のcloseでパニックしないことを確認する。
+	// Verify the second close does not panic.
 	tracker.close()
 }
 

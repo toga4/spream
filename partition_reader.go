@@ -73,9 +73,9 @@ func (r *partitionReader) run(ctx context.Context) error {
 		if err := r.readStream(gctx); err != nil {
 			return err
 		}
-		// EndTimestamp に到達してストリームが正常終了した。
-		// inflight レコードをドレインしてから tracker を閉じ、
-		// processWatermarks/processErrors のチャネル待ちを解除する。
+		// The stream terminated normally upon reaching EndTimestamp.
+		// Drain in-flight records, then close the tracker to
+		// unblock processWatermarks/processErrors waiting on channels.
 		r.tracker.drain()
 		r.tracker.close()
 		return nil

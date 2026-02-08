@@ -105,17 +105,17 @@ func TestPartitionReader_ProcessWatermarks(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 
-		// processWatermarks をバックグラウンドで実行する。
+		// Run processWatermarks in the background.
 		done := make(chan error, 1)
 		go func() {
 			done <- reader.processWatermarks(ctx)
 		}()
 
-		// ウォーターマークを送信する。
+		// Send a watermark.
 		ts := time.Date(2024, 6, 15, 12, 0, 0, 0, time.UTC)
 		tracker.watermarks <- ts
 
-		// ウォーターマークが処理されるまで少し待つ。
+		// Wait briefly for the watermark to be processed.
 		time.Sleep(50 * time.Millisecond)
 
 		cancel()
@@ -329,7 +329,7 @@ func TestPartitionReader_ProcessChildPartitionsRecord(t *testing.T) {
 			t.Error("record mismatch")
 		}
 
-		// ウォーターマークが更新されるはず。
+		// Watermark should be updated.
 		select {
 		case watermark := <-tracker.watermarks:
 			if !watermark.Equal(startTs) {
@@ -387,7 +387,7 @@ func TestPartitionReader_ProcessDataChangeRecord(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		// Consumer がゴルーチンで呼ばれるのを待つ。
+		// Wait for Consumer to be called in the goroutine.
 		select {
 		case got := <-consumed:
 			if got.TableName != "Users" {
@@ -400,7 +400,7 @@ func TestPartitionReader_ProcessDataChangeRecord(t *testing.T) {
 			t.Fatal("consumer was not called")
 		}
 
-		// ウォーターマークが更新されるのを待つ。
+		// Wait for the watermark to be updated.
 		select {
 		case watermark := <-tracker.watermarks:
 			if !watermark.Equal(commitTs) {
@@ -417,13 +417,13 @@ func TestPartitionReader_ProcessDataChangeRecord(t *testing.T) {
 			tracker: tracker,
 		}
 
-		// セマフォを使い切る。
+		// Exhaust the semaphore.
 		if err := tracker.acquire(context.Background()); err != nil {
 			t.Fatalf("initial acquire failed: %v", err)
 		}
 		tracker.add(time.Now())
 
-		// キャンセル済みコンテキストで呼び出す。
+		// Call with a canceled context.
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
@@ -482,10 +482,10 @@ func TestPartitionReader_ProcessRecords(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		// Consumer がゴルーチンで呼ばれるのを待つ。
+		// Wait for Consumer to be called in the goroutine.
 		select {
 		case <-consumed:
-			// 正常に Consumer が呼ばれた。
+			// Consumer was called successfully.
 		case <-time.After(time.Second):
 			t.Fatal("consumer was not called")
 		}
@@ -497,14 +497,14 @@ func TestPartitionReader_ProcessRecords(t *testing.T) {
 }
 
 func TestPartitionReader_ProcessRecords_DataChangeRecordError(t *testing.T) {
-	// acquire がキャンセル済みコンテキストで失敗するケース。
+	// Test case where acquire fails with a canceled context.
 	tracker := newInflightTracker(1)
 	reader := &partitionReader{
 		consumer: ConsumerFunc(func(ctx context.Context, r *DataChangeRecord) error { return nil }),
 		tracker:  tracker,
 	}
 
-	// セマフォを使い切る。
+	// Exhaust the semaphore.
 	if err := tracker.acquire(context.Background()); err != nil {
 		t.Fatalf("initial acquire failed: %v", err)
 	}
@@ -565,7 +565,7 @@ func TestPartitionReader_DrainInflight(t *testing.T) {
 		tracker: tracker,
 	}
 
-	// インフライトレコードがない場合、drain は即座に完了するはず。
+	// When no in-flight records exist, drain should complete immediately.
 	done := make(chan struct{})
 	go func() {
 		reader.drainInflight()
@@ -574,7 +574,7 @@ func TestPartitionReader_DrainInflight(t *testing.T) {
 
 	select {
 	case <-done:
-		// 正常完了。
+		// Completed successfully.
 	case <-time.After(time.Second):
 		t.Fatal("drainInflight timed out")
 	}
@@ -586,7 +586,7 @@ func TestPartitionReader_Close(t *testing.T) {
 		tracker: tracker,
 	}
 
-	// close を呼ぶとトラッカーが閉じるはず。
+	// Calling close should close the tracker.
 	reader.close()
 
 	err := tracker.acquire(context.Background())

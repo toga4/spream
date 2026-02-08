@@ -39,19 +39,19 @@ import (
 type spannerBackend int
 
 const (
-	backendNone     spannerBackend = iota // Spanner を利用できない
-	backendEmulator                       // エミュレータ
-	backendReal                           // 実 Spanner
+	backendNone     spannerBackend = iota // Spanner is not available
+	backendEmulator                       // emulator
+	backendReal                           // real Spanner
 )
 
 const (
-	// realTestInstanceID は実 Spanner テストで再利用する固定インスタンス名。
+	// realTestInstanceID is the fixed instance name reused for real Spanner tests.
 	realTestInstanceID = "spream-test"
 
-	// cloudTasksQueuePath は削除タスクを登録する Cloud Tasks キューのパス。
+	// cloudTasksQueuePath is the Cloud Tasks queue path for scheduling deletion tasks.
 	cloudTasksQueuePath = "projects/spream/locations/us-central1/queues/spream-test-cleanup"
 
-	// cloudTasksServiceAccount は Cloud Tasks が DELETE リクエストに使用するサービスアカウント。
+	// cloudTasksServiceAccount is the service account Cloud Tasks uses for DELETE requests.
 	cloudTasksServiceAccount = "github-actions@spream.iam.gserviceaccount.com"
 )
 
@@ -68,7 +68,7 @@ func TestMain(m *testing.M) {
 	var cleanup func()
 
 	if projectID := os.Getenv("SPANNER_PROJECT_ID"); projectID != "" {
-		// 実 Spanner モード
+		// Real Spanner mode
 		testProjectID = projectID
 		testInstanceID = realTestInstanceID
 		testInstancePath = fmt.Sprintf("projects/%s/instances/%s", testProjectID, testInstanceID)
@@ -77,10 +77,10 @@ func TestMain(m *testing.M) {
 		if err := ensureInstance(ctx); err != nil {
 			log.Fatalf("Failed to ensure Spanner instance: %v", err)
 		}
-		// インスタンス削除は Cloud Tasks に委任するため cleanup は不要。
+		// Instance deletion is delegated to Cloud Tasks, so no cleanup is needed.
 		backend = backendReal
 	} else {
-		// エミュレータモード
+		// Emulator mode
 		testInstancePath = fmt.Sprintf("projects/%s/instances/%s", testProjectID, testInstanceID)
 
 		var err error
@@ -100,7 +100,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// requireSpanner はSpannerバックエンド(エミュレータまたは実Spanner)が利用できない場合にテストをスキップする。
+// requireSpanner skips the test when the Spanner backend (emulator or real Spanner) is not available.
 func requireSpanner(t *testing.T) {
 	t.Helper()
 	if backend == backendNone {
@@ -108,7 +108,7 @@ func requireSpanner(t *testing.T) {
 	}
 }
 
-// requireRealSpanner は実Spannerでない場合にテストをスキップする。
+// requireRealSpanner skips the test when not running against real Spanner.
 func requireRealSpanner(t *testing.T) {
 	t.Helper()
 	if backend != backendReal {
@@ -116,8 +116,8 @@ func requireRealSpanner(t *testing.T) {
 	}
 }
 
-// ensureInstance は既存インスタンスを再利用するか、なければ新規作成する。
-// 新規作成時は先に Cloud Tasks の削除タスクを登録してからインスタンスを作成する。
+// ensureInstance reuses an existing instance or creates a new one if none exists.
+// On creation, it schedules a Cloud Tasks deletion task before creating the instance.
 func ensureInstance(ctx context.Context) error {
 	instanceAdminClient, err := instance.NewInstanceAdminClient(ctx, spannerClientOptions...)
 	if err != nil {
@@ -125,7 +125,7 @@ func ensureInstance(ctx context.Context) error {
 	}
 	defer instanceAdminClient.Close()
 
-	// インスタンスが既に存在すれば再利用する。
+	// Reuse the instance if it already exists.
 	_, err = instanceAdminClient.GetInstance(ctx, &instancepb.GetInstanceRequest{
 		Name: testInstancePath,
 	})
@@ -137,9 +137,9 @@ func ensureInstance(ctx context.Context) error {
 		return fmt.Errorf("GetInstance failed: %w", err)
 	}
 
-	// インスタンスが存在しないので新規作成する。
-	// 先に Cloud Tasks で削除タスクを登録してからインスタンスを作成する。
-	// タスク作成に失敗した場合はインスタンスを作成しない(課金を防ぐ)。
+	// The instance does not exist, so create a new one.
+	// Schedule a Cloud Tasks deletion task before creating the instance.
+	// If task creation fails, do not create the instance (to prevent billing).
 	if err := scheduleInstanceDeletion(ctx); err != nil {
 		return fmt.Errorf("scheduleInstanceDeletion failed (aborting instance creation): %w", err)
 	}
@@ -154,7 +154,7 @@ func ensureInstance(ctx context.Context) error {
 		},
 	})
 	if err != nil {
-		// 並行テスト実行で既に作成済みの場合は再利用する。
+		// Reuse the instance if another concurrent test run has already created it.
 		if status.Code(err) == codes.AlreadyExists {
 			log.Printf("Instance already created by another process, reusing: %s", testInstancePath)
 			return nil
@@ -169,8 +169,8 @@ func ensureInstance(ctx context.Context) error {
 	return nil
 }
 
-// scheduleInstanceDeletion は Cloud Tasks で55分後にインスタンスを削除する HTTP タスクを作成する。
-// GitHub Actions SA の OAuthToken を使用する。
+// scheduleInstanceDeletion creates a Cloud Tasks HTTP task to delete the instance after 55 minutes.
+// It uses the GitHub Actions SA OAuthToken.
 func scheduleInstanceDeletion(ctx context.Context) error {
 	client, err := cloudtasks.NewClient(ctx)
 	if err != nil {
@@ -278,7 +278,7 @@ func generateUniqueName(prefix string) string {
 // createTestDatabase creates a unique database with the given DDL statements and
 // returns the fully qualified database path. Each test gets its own database so
 // that DDL operations do not contend for the same schema lock.
-// 実Spanner使用時は t.Cleanup で DropDatabase を登録する。
+// When using real Spanner, t.Cleanup registers DropDatabase.
 func createTestDatabase(ctx context.Context, t *testing.T, ddlStatements ...string) string {
 	t.Helper()
 	dbID := generateUniqueName("db")
@@ -486,8 +486,8 @@ func TestSubscriber_DataChangeRecord(t *testing.T) {
 	}()
 	defer subscriber.Close()
 
-	// エミュレータは同一トランザクション内の INSERT→DELETE を最適化して 0 件にする場合がある。
-	// INSERT, UPDATE, DELETE を別トランザクションで実行する。
+	// The emulator may optimize INSERT followed by DELETE within the same transaction to zero records.
+	// Execute INSERT, UPDATE, DELETE in separate transactions.
 
 	// 1. INSERT
 	if _, err := spannerClient.ReadWriteTransaction(ctx, func(ctx context.Context, tx *spanner.ReadWriteTransaction) error {
@@ -548,17 +548,17 @@ func TestSubscriber_DataChangeRecord(t *testing.T) {
 		t.Fatalf("got %d records, want 3", len(got))
 	}
 
-	// change stream は JSON 経由で値を返すため、Go の型表現は以下のようになる:
-	//   INT64           → string      (例: "1")
-	//   FLOAT32/FLOAT64 → float64     (例: 0.25)
-	//   BOOL            → bool        (例: true)
-	//   TIMESTAMP       → string      (RFC3339、エミュレータではナノ秒が切り捨てられる)
-	//   DATE            → string      (例: "2023-01-01")
-	//   STRING          → string      (例: "string")
-	//   BYTES           → string      (base64、例: "Ynl0ZXM=")
-	//   NUMERIC         → string      (例: "123.456")
-	//   JSON            → string      (JSON文字列、例: "{\"name\":\"foobar\"}")
-	//   ARRAY<T>        → []any       (各要素は上記の型)
+	// Change stream returns values via JSON, so Go type representations are as follows:
+	//   INT64           -> string      (e.g. "1")
+	//   FLOAT32/FLOAT64 -> float64     (e.g. 0.25)
+	//   BOOL            -> bool        (e.g. true)
+	//   TIMESTAMP       -> string      (RFC3339; emulator truncates nanoseconds)
+	//   DATE            -> string      (e.g. "2023-01-01")
+	//   STRING          -> string      (e.g. "string")
+	//   BYTES           -> string      (base64, e.g. "Ynl0ZXM=")
+	//   NUMERIC         -> string      (e.g. "123.456")
+	//   JSON            -> string      (JSON string, e.g. "{\"name\":\"foobar\"}")
+	//   ARRAY<T>        -> []any       (each element follows the types above)
 
 	wantRecords := []*spream.DataChangeRecord{
 		{
@@ -744,7 +744,7 @@ func TestSubscriber_Shutdown(t *testing.T) {
 
 	spannerClient, streamName, tableName, storage := setupSubscriberTest(t, ctx)
 
-	// Consumer は処理完了を通知するチャネルを使い、Shutdown 後にドレインされることを検証する。
+	// Consumer uses a channel to signal completion, verifying that it drains after Shutdown.
 	var completed atomic.Int32
 	consumerStarted := make(chan struct{}, 1)
 	gate := make(chan struct{})
@@ -753,7 +753,7 @@ func TestSubscriber_Shutdown(t *testing.T) {
 		case consumerStarted <- struct{}{}:
 		default:
 		}
-		<-gate // Shutdown が呼ばれるまでブロックする。
+		<-gate // Block until Shutdown is called.
 		completed.Add(1)
 		return nil
 	})
@@ -773,12 +773,12 @@ func TestSubscriber_Shutdown(t *testing.T) {
 		subscribeDone <- subscriber.Subscribe()
 	}()
 
-	// データを投入して Consumer がブロック中の状態にする。
+	// Insert data so that Consumer enters a blocked state.
 	if err := insertRows(ctx, spannerClient, tableName, 1); err != nil {
 		t.Fatalf("Failed to insert rows: %v", err)
 	}
 
-	// Consumer が実際にブロック状態に入るまで待つ。
+	// Wait until Consumer actually enters the blocked state.
 	select {
 	case <-consumerStarted:
 	case <-time.After(30 * time.Second):
@@ -786,7 +786,7 @@ func TestSubscriber_Shutdown(t *testing.T) {
 		t.Fatal("Consumer was not called within timeout")
 	}
 
-	// Subscribe は ErrShutdown を即座に返す。
+	// Subscribe returns ErrShutdown immediately.
 	shutdownDone := make(chan error, 1)
 	go func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -794,7 +794,7 @@ func TestSubscriber_Shutdown(t *testing.T) {
 		shutdownDone <- subscriber.Shutdown(shutdownCtx)
 	}()
 
-	// Subscribe が ErrShutdown を返すことを確認する。
+	// Verify that Subscribe returns ErrShutdown.
 	select {
 	case err := <-subscribeDone:
 		if !errors.Is(err, spream.ErrShutdown) {
@@ -804,10 +804,10 @@ func TestSubscriber_Shutdown(t *testing.T) {
 		t.Fatal("Subscribe() did not return after Shutdown")
 	}
 
-	// Consumer のブロックを解除してドレインを完了させる。
+	// Unblock Consumer to complete the drain.
 	close(gate)
 
-	// Shutdown がドレイン完了を待って nil を返すことを確認する。
+	// Verify that Shutdown waits for drain completion and returns nil.
 	select {
 	case err := <-shutdownDone:
 		if err != nil {
@@ -829,7 +829,7 @@ func TestSubscriber_Close(t *testing.T) {
 
 	spannerClient, streamName, tableName, storage := setupSubscriberTest(t, ctx)
 
-	// Consumer を永久にブロックさせる。Consumer が呼ばれたことをチャネルで通知する。
+	// Block Consumer indefinitely. Notify via channel when Consumer is invoked.
 	consumerStarted := make(chan struct{}, 1)
 	consumer := spream.ConsumerFunc(func(ctx context.Context, _ *spream.DataChangeRecord) error {
 		select {
@@ -859,7 +859,7 @@ func TestSubscriber_Close(t *testing.T) {
 		t.Fatalf("Failed to insert rows: %v", err)
 	}
 
-	// Consumer が実際にブロック状態に入るまで待つ。
+	// Wait until Consumer actually enters the blocked state.
 	select {
 	case <-consumerStarted:
 	case <-time.After(30 * time.Second):
@@ -867,7 +867,7 @@ func TestSubscriber_Close(t *testing.T) {
 		t.Fatal("Consumer was not called within timeout")
 	}
 
-	// Close はインフライト処理の完了を待たずに即座に停止する。
+	// Close stops immediately without waiting for in-flight processing to complete.
 	if err := subscriber.Close(); err != nil {
 		t.Fatalf("Close() = %v", err)
 	}
@@ -931,7 +931,7 @@ func TestSubscriber_ShutdownTimeout(t *testing.T) {
 
 	spannerClient, streamName, tableName, storage := setupSubscriberTest(t, ctx)
 
-	// Consumer を永久にブロックさせる。Consumer が呼ばれたことをチャネルで通知する。
+	// Block Consumer indefinitely. Notify via channel when Consumer is invoked.
 	consumerStarted := make(chan struct{}, 1)
 	consumer := spream.ConsumerFunc(func(ctx context.Context, _ *spream.DataChangeRecord) error {
 		select {
@@ -961,7 +961,7 @@ func TestSubscriber_ShutdownTimeout(t *testing.T) {
 		t.Fatalf("Failed to insert rows: %v", err)
 	}
 
-	// Consumer が実際にブロック状態に入るまで待つ。
+	// Wait until Consumer actually enters the blocked state.
 	select {
 	case <-consumerStarted:
 	case <-time.After(30 * time.Second):
@@ -969,7 +969,7 @@ func TestSubscriber_ShutdownTimeout(t *testing.T) {
 		t.Fatal("Consumer was not called within timeout")
 	}
 
-	// 短いタイムアウトで Shutdown する。Consumer がブロックしているのでタイムアウトする。
+	// Shutdown with a short timeout. Times out because Consumer is blocking.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer shutdownCancel()
 
@@ -978,7 +978,7 @@ func TestSubscriber_ShutdownTimeout(t *testing.T) {
 		t.Errorf("Shutdown() = %v, want context.DeadlineExceeded", err)
 	}
 
-	// Subscribe は Shutdown 呼び出し時点で ErrShutdown を返す。
+	// Subscribe returns ErrShutdown at the point Shutdown is called.
 	select {
 	case err := <-subscribeDone:
 		if !errors.Is(err, spream.ErrShutdown) {
@@ -988,7 +988,7 @@ func TestSubscriber_ShutdownTimeout(t *testing.T) {
 		t.Fatal("Subscribe() did not return after Shutdown")
 	}
 
-	// Close でフォールバックする。
+	// Fall back to Close.
 	if err := subscriber.Close(); err != nil {
 		t.Fatalf("Close() = %v", err)
 	}
@@ -1001,7 +1001,7 @@ func TestSubscriber_AtLeastOnce(t *testing.T) {
 
 	spannerClient, streamName, tableName, storage := setupSubscriberTest(t, ctx)
 
-	// 第1回: データを投入して受信を確認した後、Close で中断する。
+	// Round 1: Insert data, confirm receipt, then interrupt with Close.
 	consumer1 := &recordingConsumer{}
 	subscriber1, err := spream.NewSubscriber(&spream.Config{
 		SpannerClient:    spannerClient,
@@ -1018,8 +1018,8 @@ func TestSubscriber_AtLeastOnce(t *testing.T) {
 		subscribeDone1 <- subscriber1.Subscribe()
 	}()
 
-	// エミュレータは同一トランザクション内の複数 DML を 1 つの DataChangeRecord にまとめる場合がある。
-	// 各行を別トランザクションで挿入する。
+	// The emulator may merge multiple DMLs within the same transaction into a single DataChangeRecord.
+	// Insert each row in a separate transaction.
 	for _, key := range []int64{1, 2, 3} {
 		if err := insertRows(ctx, spannerClient, tableName, key); err != nil {
 			t.Fatalf("Failed to insert row %d: %v", key, err)
@@ -1031,11 +1031,11 @@ func TestSubscriber_AtLeastOnce(t *testing.T) {
 		t.Fatalf("First subscriber: got %d records, want 3", consumer1.count())
 	}
 
-	// Close で強制中断する。watermark の更新タイミングによっては一部が再配信される。
+	// Force-interrupt with Close. Some records may be redelivered depending on watermark update timing.
 	subscriber1.Close()
 	<-subscribeDone1
 
-	// 第2回: 同じ PartitionStorage で新しい Subscriber を作成する。
+	// Round 2: Create a new Subscriber with the same PartitionStorage.
 	consumer2 := &recordingConsumer{}
 	subscriber2, err := spream.NewSubscriber(&spream.Config{
 		SpannerClient:    spannerClient,
@@ -1051,13 +1051,13 @@ func TestSubscriber_AtLeastOnce(t *testing.T) {
 		_ = subscriber2.Subscribe()
 	}()
 
-	// 追加でデータを投入する。
+	// Insert additional data.
 	if err := insertRows(ctx, spannerClient, tableName, 4); err != nil {
 		t.Fatalf("Failed to insert row: %v", err)
 	}
 
-	// 第2回の subscriber は、少なくとも key=4 の INSERT を受信する。
-	// watermark の位置によっては key=1,2,3 の一部も再配信される(at-least-once)。
+	// The second subscriber receives at least the INSERT for key=4.
+	// Depending on the watermark position, some of key=1,2,3 may be redelivered (at-least-once).
 	if !waitForRecords(consumer2, 1, 30*time.Second) {
 		subscriber2.Close()
 		t.Fatalf("Second subscriber: got %d records, want >= 1", consumer2.count())
@@ -1065,7 +1065,7 @@ func TestSubscriber_AtLeastOnce(t *testing.T) {
 
 	subscriber2.Close()
 
-	// 第1回 + 第2回で合計 4 件以上受信していることを確認する(at-least-once)。
+	// Verify that the total across round 1 and round 2 is at least 4 records (at-least-once).
 	total := consumer1.count() + consumer2.count()
 	if total < 4 {
 		t.Errorf("Total records = %d (sub1=%d, sub2=%d), want >= 4", total, consumer1.count(), consumer2.count())
@@ -1088,7 +1088,7 @@ func TestSubscriber_MaxInflight(t *testing.T) {
 		cur := currentConcurrent.Add(1)
 		defer currentConcurrent.Add(-1)
 
-		// 最大同時実行数を記録する。
+		// Record the maximum concurrency.
 		for {
 			old := maxConcurrent.Load()
 			if cur <= old || maxConcurrent.CompareAndSwap(old, cur) {
@@ -1096,7 +1096,7 @@ func TestSubscriber_MaxInflight(t *testing.T) {
 			}
 		}
 
-		// 並行処理を観測するために少し待つ。
+		// Wait briefly to observe concurrent processing.
 		time.Sleep(500 * time.Millisecond)
 		return nil
 	})
@@ -1117,14 +1117,14 @@ func TestSubscriber_MaxInflight(t *testing.T) {
 	}()
 	defer subscriber.Close()
 
-	// 複数行を投入する。各行は別トランザクションにして独立した DataChangeRecord にする。
+	// Insert multiple rows. Each row is in a separate transaction to produce independent DataChangeRecords.
 	for i := int64(1); i <= 5; i++ {
 		if err := insertRows(ctx, spannerClient, tableName, i); err != nil {
 			t.Fatalf("Failed to insert row %d: %v", i, err)
 		}
 	}
 
-	// Consumer がすべてのレコードを処理するのを待つ。
+	// Wait for Consumer to process all records.
 	deadline := time.After(30 * time.Second)
 	for {
 		select {
@@ -1133,7 +1133,7 @@ func TestSubscriber_MaxInflight(t *testing.T) {
 		case <-time.After(200 * time.Millisecond):
 		}
 		if currentConcurrent.Load() == 0 && maxConcurrent.Load() > 0 {
-			// すべての処理が完了した。
+			// All processing is complete.
 			break
 		}
 	}
@@ -1144,9 +1144,9 @@ func TestSubscriber_MaxInflight(t *testing.T) {
 	}
 }
 
-// TestSubscriber_DataChangeRecord_ExtendedTypes は PROTO, ENUM, UUID 型の
-// change stream レコードを検証する。エミュレータは PROTO/ENUM 型を未サポートのため、
-// 実 Spanner でのみ実行する。
+// TestSubscriber_DataChangeRecord_ExtendedTypes verifies change stream records for PROTO, ENUM,
+// and UUID types. This test runs only on real Spanner because the emulator does not support
+// PROTO/ENUM types.
 func TestSubscriber_DataChangeRecord_ExtendedTypes(t *testing.T) {
 	requireRealSpanner(t)
 	t.Parallel()
@@ -1156,7 +1156,7 @@ func TestSubscriber_DataChangeRecord_ExtendedTypes(t *testing.T) {
 	streamName := generateUniqueName("stream")
 	partitionTableName := generateUniqueName("partition")
 
-	// descriptorpb でプログラマティックに proto descriptor を構築する。
+	// Programmatically build a proto descriptor using descriptorpb.
 	const (
 		protoPackage = "spream.test"
 		msgName      = "TestMessage"
@@ -1218,7 +1218,7 @@ func TestSubscriber_DataChangeRecord_ExtendedTypes(t *testing.T) {
 		partitionMetadataTableDDL(partitionTableName),
 	}
 
-	// createTestDatabase は ProtoDescriptors を渡せないため、テスト内で直接データベースを作成する。
+	// createTestDatabase does not support passing ProtoDescriptors, so create the database directly in this test.
 	dbID := generateUniqueName("db")
 
 	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx, spannerClientOptions...)
@@ -1276,11 +1276,11 @@ func TestSubscriber_DataChangeRecord_ExtendedTypes(t *testing.T) {
 	}()
 	defer subscriber.Close()
 
-	// INSERT を実行する。
+	// Execute INSERT.
 	insertSQL := fmt.Sprintf(`INSERT INTO %s (Key, ProtoCol, EnumCol, UuidCol) VALUES (@key, @proto, @enum, @uuid)`, tableName)
 	params := map[string]any{
 		"key":   int64(1),
-		"proto": []byte{}, // 空の proto メッセージ
+		"proto": []byte{}, // empty proto message
 		"enum":  int64(0), // TEST_ENUM_UNSPECIFIED
 		"uuid":  "550e8400-e29b-41d4-a716-446655440000",
 	}
@@ -1306,11 +1306,11 @@ func TestSubscriber_DataChangeRecord_ExtendedTypes(t *testing.T) {
 		t.Fatalf("got %d records, want 1", len(got))
 	}
 
-	// change stream は JSON 経由で値を返すため、Go の型表現は以下のようになる:
-	//   PROTO → string (base64エンコードされたバイナリ、空メッセージなら "")
-	//   ENUM  → string (数値文字列、例: "0")
-	//   UUID  → string (例: "550e8400-e29b-41d4-a716-446655440000")
-	//   未設定の ARRAY カラム → nil
+	// Change stream returns values via JSON, so Go type representations are as follows:
+	//   PROTO -> string (base64-encoded binary; "" for empty message)
+	//   ENUM  -> string (numeric string, e.g. "0")
+	//   UUID  -> string (e.g. "550e8400-e29b-41d4-a716-446655440000")
+	//   Unset ARRAY column -> nil
 
 	wantRecords := []*spream.DataChangeRecord{
 		{
@@ -1355,8 +1355,8 @@ func TestSubscriber_DataChangeRecord_ExtendedTypes(t *testing.T) {
 
 func ptr[T any](v T) *T { return &v }
 
-// TestSubscriber_EndTimestamp は EndTimestamp 到達時に Subscribe が nil を返して
-// 正常終了することを検証する。
+// TestSubscriber_EndTimestamp verifies that Subscribe returns nil and terminates normally
+// when EndTimestamp is reached.
 func TestSubscriber_EndTimestamp(t *testing.T) {
 	requireSpanner(t)
 	t.Parallel()
@@ -1365,7 +1365,7 @@ func TestSubscriber_EndTimestamp(t *testing.T) {
 	spannerClient, streamName, tableName, storage := setupSubscriberTest(t, ctx)
 	consumer := &recordingConsumer{}
 
-	// 現在時刻から少し先を EndTimestamp に設定する。
+	// Set EndTimestamp to slightly ahead of the current time.
 	endTimestamp := time.Now().Add(15 * time.Second)
 
 	subscriber, err := spream.NewSubscriber(&spream.Config{
@@ -1384,7 +1384,7 @@ func TestSubscriber_EndTimestamp(t *testing.T) {
 		subscribeDone <- subscriber.Subscribe()
 	}()
 
-	// データを投入して、Change Stream が動作していることを確認する。
+	// Insert data to confirm the change stream is operating.
 	if err := insertRows(ctx, spannerClient, tableName, 1); err != nil {
 		t.Fatalf("Failed to insert rows: %v", err)
 	}
@@ -1398,7 +1398,7 @@ func TestSubscriber_EndTimestamp(t *testing.T) {
 		t.Fatalf("Timed out waiting for records: got %d, want >= 1", consumer.count())
 	}
 
-	// EndTimestamp 到達後、Subscribe は nil を返して正常終了する。
+	// After reaching EndTimestamp, Subscribe returns nil and terminates normally.
 	select {
 	case err := <-subscribeDone:
 		if err != nil {

@@ -33,7 +33,7 @@ func TestInmemoryPartitionStorage_InitializeRootPartition(t *testing.T) {
 		t.Fatalf("InitializeRootPartition failed: %v", err)
 	}
 
-	// ルートパーティションが正しく作成されたか確認する。
+	// Verify the root partition was created correctly.
 	got := storage.m[spream.RootPartitionToken]
 	if got == nil {
 		t.Fatal("root partition was not created")
@@ -103,7 +103,7 @@ func TestInmemoryPartitionStorage_GetUnfinishedMinWatermarkPartition(t *testing.
 		storage.m["token-3"] = &spream.PartitionMetadata{
 			PartitionToken: "token-3",
 			State:          spream.StateFinished,
-			Watermark:      ts1.Add(-time.Hour), // FINISHED なので無視されるはず。
+			Watermark:      ts1.Add(-time.Hour), // Should be ignored because it is FINISHED.
 		}
 
 		got, err := storage.GetUnfinishedMinWatermarkPartition(ctx)
@@ -123,7 +123,7 @@ func TestInmemoryPartitionStorage_GetInterruptedPartitions(t *testing.T) {
 	ctx := context.Background()
 	storage := NewInmemory()
 
-	// InmemoryPartitionStorage は常に nil を返す。
+	// InmemoryPartitionStorage always returns nil.
 	got, err := storage.GetInterruptedPartitions(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -143,16 +143,16 @@ func TestInmemoryPartitionStorage_GetSchedulablePartitions(t *testing.T) {
 		storage.m["token-1"] = &spream.PartitionMetadata{
 			PartitionToken: "token-1",
 			State:          spream.StateCreated,
-			StartTimestamp:  ts, // minWatermark(ts) <= ts なのでスケジュール可能。
+			StartTimestamp:  ts, // Schedulable because minWatermark(ts) <= ts.
 		}
 		storage.m["token-2"] = &spream.PartitionMetadata{
 			PartitionToken: "token-2",
 			State:          spream.StateCreated,
-			StartTimestamp:  ts.Add(-time.Hour), // minWatermark(ts) > ts-1h なのでスケジュール不可。
+			StartTimestamp:  ts.Add(-time.Hour), // Not schedulable because minWatermark(ts) > ts-1h.
 		}
 		storage.m["token-3"] = &spream.PartitionMetadata{
 			PartitionToken: "token-3",
-			State:          spream.StateScheduled, // CREATED でないのでスケジュール不可。
+			State:          spream.StateScheduled, // Not schedulable because state is not CREATED.
 			StartTimestamp:  ts,
 		}
 
@@ -249,7 +249,7 @@ func TestInmemoryPartitionStorage_StateTransitions(t *testing.T) {
 	startTs := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	endTs := time.Date(2024, 12, 31, 23, 59, 59, 0, time.UTC)
 
-	// ルートパーティションを初期化する。
+	// Initialize the root partition.
 	err := storage.InitializeRootPartition(ctx, startTs, endTs, 10*time.Second)
 	if err != nil {
 		t.Fatalf("InitializeRootPartition failed: %v", err)
@@ -257,13 +257,13 @@ func TestInmemoryPartitionStorage_StateTransitions(t *testing.T) {
 
 	token := spream.RootPartitionToken
 
-	// CREATED 状態を確認する。
+	// Verify the state is CREATED.
 	p := storage.m[token]
 	if p.State != spream.StateCreated {
 		t.Fatalf("initial State = %v, want %v", p.State, spream.StateCreated)
 	}
 
-	// SCHEDULED に遷移する。
+	// Transition to SCHEDULED.
 	err = storage.UpdateToScheduled(ctx, []string{token})
 	if err != nil {
 		t.Fatalf("UpdateToScheduled failed: %v", err)
@@ -275,7 +275,7 @@ func TestInmemoryPartitionStorage_StateTransitions(t *testing.T) {
 		t.Error("ScheduledAt is nil")
 	}
 
-	// RUNNING に遷移する。
+	// Transition to RUNNING.
 	err = storage.UpdateToRunning(ctx, token)
 	if err != nil {
 		t.Fatalf("UpdateToRunning failed: %v", err)
@@ -287,7 +287,7 @@ func TestInmemoryPartitionStorage_StateTransitions(t *testing.T) {
 		t.Error("RunningAt is nil")
 	}
 
-	// ウォーターマークを更新する。
+	// Update the watermark.
 	newWatermark := time.Date(2024, 6, 15, 12, 0, 0, 0, time.UTC)
 	err = storage.UpdateWatermark(ctx, token, newWatermark)
 	if err != nil {
@@ -297,7 +297,7 @@ func TestInmemoryPartitionStorage_StateTransitions(t *testing.T) {
 		t.Errorf("Watermark = %v, want %v", p.Watermark, newWatermark)
 	}
 
-	// FINISHED に遷移する。
+	// Transition to FINISHED.
 	err = storage.UpdateToFinished(ctx, token)
 	if err != nil {
 		t.Fatalf("UpdateToFinished failed: %v", err)

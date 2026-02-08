@@ -298,9 +298,9 @@ func (s *Subscriber) runMainLoop() {
 					s.drain()
 					continue
 				}
-				// Shutdown/Close によるコンテキストキャンセル由来のエラーは
-				// fail に記録しない。exitError が shutdown/closed フラグに基づいて
-				// 適切なエラーを返す。
+				// Do not record errors caused by context cancellation from Shutdown/Close
+				// in fail. exitError returns the appropriate error based on
+				// the shutdown/closed flags.
 				if s.ctx.Err() != nil {
 					return
 				}
