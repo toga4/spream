@@ -27,24 +27,54 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+type spannerBackend int
+
 const (
-	testProjectID    = "test-project"
-	testInstanceID   = "test-instance"
-	testProjectPath  = "projects/" + testProjectID
-	testInstancePath = testProjectPath + "/instances/" + testInstanceID
+	backendNone     spannerBackend = iota // Spanner を利用できない
+	backendEmulator                       // エミュレータ
+	backendReal                           // 実 Spanner
 )
 
 var (
-	emulatorAvailable    bool
+	testProjectID    = "test-project"
+	testInstanceID   = "test-instance"
+	testInstancePath string
+
+	backend              spannerBackend
 	spannerClientOptions []option.ClientOption
 )
 
 func TestMain(m *testing.M) {
-	cleanup, err := tryLaunchEmulatorOnDocker()
-	if err != nil {
-		log.Printf("Spanner emulator not available: %v. Skipping integration tests.", err)
+	var cleanup func()
+
+	if projectID := os.Getenv("SPANNER_PROJECT_ID"); projectID != "" {
+		// 実 Spanner モード
+		testProjectID = projectID
+		testInstanceID = generateUniqueName("test")
+		testInstancePath = fmt.Sprintf("projects/%s/instances/%s", testProjectID, testInstanceID)
+
+		ctx := context.Background()
+		if err := createRealInstance(ctx); err != nil {
+			log.Fatalf("Failed to create real Spanner instance: %v", err)
+		}
+		cleanup = func() {
+			ctx := context.Background()
+			if err := deleteInstance(ctx); err != nil {
+				log.Printf("Failed to delete instance %s: %v", testInstancePath, err)
+			}
+		}
+		backend = backendReal
 	} else {
-		emulatorAvailable = true
+		// エミュレータモード
+		testInstancePath = fmt.Sprintf("projects/%s/instances/%s", testProjectID, testInstanceID)
+
+		var err error
+		cleanup, err = tryLaunchEmulatorOnDocker()
+		if err != nil {
+			log.Printf("Spanner emulator not available: %v. Skipping integration tests.", err)
+		} else {
+			backend = backendEmulator
+		}
 	}
 
 	code := m.Run()
@@ -55,11 +85,58 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func requireEmulator(t *testing.T) {
+// requireSpanner はSpannerバックエンド(エミュレータまたは実Spanner)が利用できない場合にテストをスキップする。
+func requireSpanner(t *testing.T) {
 	t.Helper()
-	if !emulatorAvailable {
-		t.Skip("Spanner emulator not available")
+	if backend == backendNone {
+		t.Skip("Spanner not available")
 	}
+}
+
+// requireRealSpanner は実Spannerでない場合にテストをスキップする。
+func requireRealSpanner(t *testing.T) {
+	t.Helper()
+	if backend != backendReal {
+		t.Skip("Real Spanner required")
+	}
+}
+
+// createRealInstance は実Spannerにテスト用インスタンスを作成する。
+func createRealInstance(ctx context.Context) error {
+	instanceAdminClient, err := instance.NewInstanceAdminClient(ctx, spannerClientOptions...)
+	if err != nil {
+		return err
+	}
+	defer instanceAdminClient.Close()
+
+	op, err := instanceAdminClient.CreateInstance(ctx, &instancepb.CreateInstanceRequest{
+		Parent:     "projects/" + testProjectID,
+		InstanceId: testInstanceID,
+		Instance: &instancepb.Instance{
+			Config:          fmt.Sprintf("projects/%s/instanceConfigs/regional-us-central1", testProjectID),
+			DisplayName:     testInstanceID,
+			ProcessingUnits: 100,
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	_, err = op.Wait(ctx)
+	return err
+}
+
+// deleteInstance はテスト用インスタンスを削除する。
+func deleteInstance(ctx context.Context) error {
+	instanceAdminClient, err := instance.NewInstanceAdminClient(ctx, spannerClientOptions...)
+	if err != nil {
+		return err
+	}
+	defer instanceAdminClient.Close()
+
+	return instanceAdminClient.DeleteInstance(ctx, &instancepb.DeleteInstanceRequest{
+		Name: testInstancePath,
+	})
 }
 
 // tryLaunchEmulatorOnDocker attempts to launch the emulator and returns a cleanup function.
@@ -113,7 +190,7 @@ func createInstance(ctx context.Context) error {
 	defer instanceAdminClient.Close()
 
 	op, err := instanceAdminClient.CreateInstance(ctx, &instancepb.CreateInstanceRequest{
-		Parent:     testProjectPath,
+		Parent:     "projects/" + testProjectID,
 		InstanceId: testInstanceID,
 		Instance: &instancepb.Instance{
 			Config:      "emulator-config",
@@ -136,6 +213,7 @@ func generateUniqueName(prefix string) string {
 // createTestDatabase creates a unique database with the given DDL statements and
 // returns the fully qualified database path. Each test gets its own database so
 // that DDL operations do not contend for the same schema lock.
+// 実Spanner使用時は t.Cleanup で DropDatabase を登録する。
 func createTestDatabase(ctx context.Context, t *testing.T, ddlStatements ...string) string {
 	t.Helper()
 	dbID := generateUniqueName("db")
@@ -144,7 +222,6 @@ func createTestDatabase(ctx context.Context, t *testing.T, ddlStatements ...stri
 	if err != nil {
 		t.Fatalf("Failed to create database admin client: %v", err)
 	}
-	defer databaseAdminClient.Close()
 
 	op, err := databaseAdminClient.CreateDatabase(ctx, &databasepb.CreateDatabaseRequest{
 		Parent:          testInstancePath,
@@ -152,12 +229,30 @@ func createTestDatabase(ctx context.Context, t *testing.T, ddlStatements ...stri
 		ExtraStatements: ddlStatements,
 	})
 	if err != nil {
+		databaseAdminClient.Close()
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	if _, err := op.Wait(ctx); err != nil {
+		databaseAdminClient.Close()
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	return testInstancePath + "/databases/" + dbID
+
+	dbPath := testInstancePath + "/databases/" + dbID
+
+	if backend == backendReal {
+		t.Cleanup(func() {
+			if err := databaseAdminClient.DropDatabase(ctx, &databasepb.DropDatabaseRequest{
+				Database: dbPath,
+			}); err != nil {
+				t.Logf("Failed to drop database %s: %v", dbPath, err)
+			}
+			databaseAdminClient.Close()
+		})
+	} else {
+		databaseAdminClient.Close()
+	}
+
+	return dbPath
 }
 
 // partitionMetadataTableDDL returns the DDL statement for a partition metadata table.
@@ -266,7 +361,7 @@ func (c *recordingConsumer) snapshot() []*spream.DataChangeRecord {
 }
 
 func TestSubscriber_DataChangeRecord(t *testing.T) {
-	requireEmulator(t)
+	requireSpanner(t)
 	t.Parallel()
 	ctx := context.Background()
 
@@ -458,7 +553,7 @@ func TestSubscriber_DataChangeRecord(t *testing.T) {
 }
 
 func TestSubscriber_Shutdown(t *testing.T) {
-	requireEmulator(t)
+	requireSpanner(t)
 	t.Parallel()
 	ctx := context.Background()
 
@@ -543,7 +638,7 @@ func TestSubscriber_Shutdown(t *testing.T) {
 }
 
 func TestSubscriber_Close(t *testing.T) {
-	requireEmulator(t)
+	requireSpanner(t)
 	t.Parallel()
 	ctx := context.Background()
 
@@ -603,7 +698,7 @@ func TestSubscriber_Close(t *testing.T) {
 }
 
 func TestSubscriber_ConsumerError(t *testing.T) {
-	requireEmulator(t)
+	requireSpanner(t)
 	t.Parallel()
 	ctx := context.Background()
 
@@ -645,7 +740,7 @@ func TestSubscriber_ConsumerError(t *testing.T) {
 }
 
 func TestSubscriber_ShutdownTimeout(t *testing.T) {
-	requireEmulator(t)
+	requireSpanner(t)
 	t.Parallel()
 	ctx := context.Background()
 
@@ -715,7 +810,7 @@ func TestSubscriber_ShutdownTimeout(t *testing.T) {
 }
 
 func TestSubscriber_AtLeastOnce(t *testing.T) {
-	requireEmulator(t)
+	requireSpanner(t)
 	t.Parallel()
 	ctx := context.Background()
 
@@ -793,7 +888,7 @@ func TestSubscriber_AtLeastOnce(t *testing.T) {
 }
 
 func TestSubscriber_MaxInflight(t *testing.T) {
-	requireEmulator(t)
+	requireSpanner(t)
 	t.Parallel()
 	ctx := context.Background()
 
@@ -865,8 +960,8 @@ func TestSubscriber_MaxInflight(t *testing.T) {
 }
 
 // TestSubscriber_EndTimestamp はエミュレータが endTimestamp でストリームを終了しないため、
-// エミュレータ環境ではスキップする。本番 Spanner では EndTimestamp 到達時に Subscribe が
-// nil を返して正常終了する。
+// エミュレータ環境ではスキップする。実 Spanner では EndTimestamp 到達時に Subscribe が
+// nil を返して正常終了することを検証する。
 func TestSubscriber_EndTimestamp(t *testing.T) {
-	t.Skip("Spanner emulator does not terminate change stream at endTimestamp")
+	requireRealSpanner(t)
 }
