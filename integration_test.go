@@ -30,10 +30,8 @@ import (
 const (
 	testProjectID    = "test-project"
 	testInstanceID   = "test-instance"
-	testDatabaseID   = "test-database"
 	testProjectPath  = "projects/" + testProjectID
 	testInstancePath = testProjectPath + "/instances/" + testInstanceID
-	testDatabasePath = testInstancePath + "/databases/" + testDatabaseID
 )
 
 var (
@@ -99,9 +97,6 @@ func launchEmulatorOnDocker() func() {
 	if err := createInstance(ctx); err != nil {
 		log.Fatalf("Could not create instance: %v", err)
 	}
-	if err := createDatabase(ctx); err != nil {
-		log.Fatalf("Could not create database: %v", err)
-	}
 
 	return func() {
 		if err := container.Terminate(ctx); err != nil {
@@ -134,40 +129,40 @@ func createInstance(ctx context.Context) error {
 	return err
 }
 
-func createDatabase(ctx context.Context) error {
+func generateUniqueName(prefix string) string {
+	return fmt.Sprintf("%s_%s", prefix, strconv.FormatUint(rand.Uint64(), 36))
+}
+
+// createTestDatabase creates a unique database with the given DDL statements and
+// returns the fully qualified database path. Each test gets its own database so
+// that DDL operations do not contend for the same schema lock.
+func createTestDatabase(ctx context.Context, t *testing.T, ddlStatements ...string) string {
+	t.Helper()
+	dbID := generateUniqueName("db")
+
 	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx, spannerClientOptions...)
 	if err != nil {
-		return err
+		t.Fatalf("Failed to create database admin client: %v", err)
 	}
 	defer databaseAdminClient.Close()
 
 	op, err := databaseAdminClient.CreateDatabase(ctx, &databasepb.CreateDatabaseRequest{
 		Parent:          testInstancePath,
-		CreateStatement: fmt.Sprintf("CREATE DATABASE `%s`", testDatabaseID),
+		CreateStatement: fmt.Sprintf("CREATE DATABASE `%s`", dbID),
+		ExtraStatements: ddlStatements,
 	})
 	if err != nil {
-		return err
+		t.Fatalf("Failed to create database: %v", err)
 	}
-
-	_, err = op.Wait(ctx)
-	return err
+	if _, err := op.Wait(ctx); err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	return testInstancePath + "/databases/" + dbID
 }
 
-func generateUniqueName(prefix string) string {
-	return fmt.Sprintf("%s_%s", prefix, strconv.FormatUint(rand.Uint64(), 36))
-}
-
-func createPartitionMetadataTable(ctx context.Context, databaseName, tableName string) error {
-	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx, spannerClientOptions...)
-	if err != nil {
-		return err
-	}
-	defer databaseAdminClient.Close()
-
-	op, err := databaseAdminClient.UpdateDatabaseDdl(ctx, &databasepb.UpdateDatabaseDdlRequest{
-		Database: databaseName,
-		Statements: []string{
-			fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+// partitionMetadataTableDDL returns the DDL statement for a partition metadata table.
+func partitionMetadataTableDDL(tableName string) string {
+	return fmt.Sprintf(`CREATE TABLE %s (
   PartitionToken STRING(MAX) NOT NULL,
   ParentTokens ARRAY<STRING(MAX)> NOT NULL,
   StartTimestamp TIMESTAMP NOT NULL,
@@ -180,115 +175,33 @@ func createPartitionMetadataTable(ctx context.Context, databaseName, tableName s
   RunningAt TIMESTAMP OPTIONS (allow_commit_timestamp=true),
   FinishedAt TIMESTAMP OPTIONS (allow_commit_timestamp=true),
 ) PRIMARY KEY (PartitionToken),
-  ROW DELETION POLICY (OLDER_THAN(FinishedAt, INTERVAL 1 DAY))`, tableName),
-		},
-	})
-	if err != nil {
-		return err
-	}
-	return op.Wait(ctx)
+  ROW DELETION POLICY (OLDER_THAN(FinishedAt, INTERVAL 1 DAY))`, tableName)
 }
 
-func createTableAndChangeStream(ctx context.Context, databaseName string) (string, string, error) {
-	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx, spannerClientOptions...)
-	if err != nil {
-		return "", "", err
-	}
-	defer databaseAdminClient.Close()
-
-	tableName := generateUniqueName("table")
-	streamName := generateUniqueName("stream")
-
-	op, err := databaseAdminClient.UpdateDatabaseDdl(ctx, &databasepb.UpdateDatabaseDdlRequest{
-		Database: databaseName,
-		Statements: []string{
-			fmt.Sprintf(`CREATE TABLE %s (
-				Bool            BOOL,
-				Int64           INT64,
-				Float64         FLOAT64,
-				Timestamp       TIMESTAMP,
-				Date            DATE,
-				String          STRING(MAX),
-				Bytes           BYTES(MAX),
-				Numeric         NUMERIC,
-				Json            JSON,
-				BoolArray       ARRAY<BOOL>,
-				Int64Array      ARRAY<INT64>,
-				Float64Array    ARRAY<FLOAT64>,
-				TimestampArray  ARRAY<TIMESTAMP>,
-				DateArray       ARRAY<DATE>,
-				StringArray     ARRAY<STRING(MAX)>,
-				BytesArray      ARRAY<BYTES(MAX)>,
-				NumericArray    ARRAY<NUMERIC>,
-				JsonArray       ARRAY<JSON>,
-			) PRIMARY KEY (Int64)`, tableName),
-			fmt.Sprintf(`CREATE CHANGE STREAM %s FOR %s`, streamName, tableName),
-		},
-	})
-	if err != nil {
-		return "", "", err
-	}
-
-	if err := op.Wait(ctx); err != nil {
-		return "", "", err
-	}
-
-	return tableName, streamName, nil
-}
-
-// createSimpleTableAndChangeStream creates a simple table (Int64 PK, Value STRING) for tests
-// that don't need the full column type coverage.
-func createSimpleTableAndChangeStream(ctx context.Context, databaseName string) (string, string, error) {
-	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx, spannerClientOptions...)
-	if err != nil {
-		return "", "", err
-	}
-	defer databaseAdminClient.Close()
-
-	tableName := generateUniqueName("table")
-	streamName := generateUniqueName("stream")
-
-	op, err := databaseAdminClient.UpdateDatabaseDdl(ctx, &databasepb.UpdateDatabaseDdlRequest{
-		Database: databaseName,
-		Statements: []string{
-			fmt.Sprintf(`CREATE TABLE %s (
-				Key INT64,
-				Value STRING(MAX),
-			) PRIMARY KEY (Key)`, tableName),
-			fmt.Sprintf(`CREATE CHANGE STREAM %s FOR %s`, streamName, tableName),
-		},
-	})
-	if err != nil {
-		return "", "", err
-	}
-
-	if err := op.Wait(ctx); err != nil {
-		return "", "", err
-	}
-
-	return tableName, streamName, nil
-}
-
-// setupSubscriberTest creates a Spanner client, table, change stream, and partition metadata table
-// for integration testing. It returns the Spanner client, stream name, table name, and partition storage.
+// setupSubscriberTest creates a dedicated database with a simple table, change stream,
+// and partition metadata table. It returns the Spanner client, stream name, table name,
+// and partition storage.
 func setupSubscriberTest(t *testing.T, ctx context.Context) (*spanner.Client, string, string, *partitionstorage.SpannerPartitionStorage) {
 	t.Helper()
 
-	spannerClient, err := spanner.NewClient(ctx, testDatabasePath, spannerClientOptions...)
+	tableName := generateUniqueName("table")
+	streamName := generateUniqueName("stream")
+	partitionTableName := generateUniqueName("partition")
+
+	dbPath := createTestDatabase(ctx, t,
+		fmt.Sprintf(`CREATE TABLE %s (
+			Key INT64,
+			Value STRING(MAX),
+		) PRIMARY KEY (Key)`, tableName),
+		fmt.Sprintf(`CREATE CHANGE STREAM %s FOR %s`, streamName, tableName),
+		partitionMetadataTableDDL(partitionTableName),
+	)
+
+	spannerClient, err := spanner.NewClient(ctx, dbPath, spannerClientOptions...)
 	if err != nil {
 		t.Fatalf("Failed to create spanner client: %v", err)
 	}
 	t.Cleanup(func() { spannerClient.Close() })
-
-	tableName, streamName, err := createSimpleTableAndChangeStream(ctx, spannerClient.DatabaseName())
-	if err != nil {
-		t.Fatalf("Failed to create table and change stream: %v", err)
-	}
-
-	partitionTableName := generateUniqueName("partition")
-	if err := createPartitionMetadataTable(ctx, spannerClient.DatabaseName(), partitionTableName); err != nil {
-		t.Fatalf("Failed to create metadata table: %v", err)
-	}
 
 	storage := partitionstorage.NewSpanner(spannerClient, partitionTableName)
 	return spannerClient, streamName, tableName, storage
@@ -354,23 +267,43 @@ func (c *recordingConsumer) snapshot() []*spream.DataChangeRecord {
 
 func TestSubscriber_DataChangeRecord(t *testing.T) {
 	requireEmulator(t)
+	t.Parallel()
 	ctx := context.Background()
 
-	spannerClient, err := spanner.NewClient(ctx, testDatabasePath, spannerClientOptions...)
+	tableName := generateUniqueName("table")
+	streamName := generateUniqueName("stream")
+	partitionTableName := generateUniqueName("partition")
+
+	dbPath := createTestDatabase(ctx, t,
+		fmt.Sprintf(`CREATE TABLE %s (
+			Bool            BOOL,
+			Int64           INT64,
+			Float64         FLOAT64,
+			Timestamp       TIMESTAMP,
+			Date            DATE,
+			String          STRING(MAX),
+			Bytes           BYTES(MAX),
+			Numeric         NUMERIC,
+			Json            JSON,
+			BoolArray       ARRAY<BOOL>,
+			Int64Array      ARRAY<INT64>,
+			Float64Array    ARRAY<FLOAT64>,
+			TimestampArray  ARRAY<TIMESTAMP>,
+			DateArray       ARRAY<DATE>,
+			StringArray     ARRAY<STRING(MAX)>,
+			BytesArray      ARRAY<BYTES(MAX)>,
+			NumericArray    ARRAY<NUMERIC>,
+			JsonArray       ARRAY<JSON>,
+		) PRIMARY KEY (Int64)`, tableName),
+		fmt.Sprintf(`CREATE CHANGE STREAM %s FOR %s`, streamName, tableName),
+		partitionMetadataTableDDL(partitionTableName),
+	)
+
+	spannerClient, err := spanner.NewClient(ctx, dbPath, spannerClientOptions...)
 	if err != nil {
 		t.Fatalf("Failed to create spanner client: %v", err)
 	}
 	defer spannerClient.Close()
-
-	tableName, streamName, err := createTableAndChangeStream(ctx, spannerClient.DatabaseName())
-	if err != nil {
-		t.Fatalf("Failed to create table and change stream: %v", err)
-	}
-
-	partitionTableName := generateUniqueName("partition")
-	if err := createPartitionMetadataTable(ctx, spannerClient.DatabaseName(), partitionTableName); err != nil {
-		t.Fatalf("Failed to create metadata table: %v", err)
-	}
 
 	storage := partitionstorage.NewSpanner(spannerClient, partitionTableName)
 	consumer := &recordingConsumer{}
@@ -520,6 +453,7 @@ func TestSubscriber_DataChangeRecord(t *testing.T) {
 
 func TestSubscriber_Shutdown(t *testing.T) {
 	requireEmulator(t)
+	t.Parallel()
 	ctx := context.Background()
 
 	spannerClient, streamName, tableName, storage := setupSubscriberTest(t, ctx)
@@ -604,6 +538,7 @@ func TestSubscriber_Shutdown(t *testing.T) {
 
 func TestSubscriber_Close(t *testing.T) {
 	requireEmulator(t)
+	t.Parallel()
 	ctx := context.Background()
 
 	spannerClient, streamName, tableName, storage := setupSubscriberTest(t, ctx)
@@ -663,6 +598,7 @@ func TestSubscriber_Close(t *testing.T) {
 
 func TestSubscriber_ConsumerError(t *testing.T) {
 	requireEmulator(t)
+	t.Parallel()
 	ctx := context.Background()
 
 	spannerClient, streamName, tableName, storage := setupSubscriberTest(t, ctx)
@@ -704,6 +640,7 @@ func TestSubscriber_ConsumerError(t *testing.T) {
 
 func TestSubscriber_ShutdownTimeout(t *testing.T) {
 	requireEmulator(t)
+	t.Parallel()
 	ctx := context.Background()
 
 	spannerClient, streamName, tableName, storage := setupSubscriberTest(t, ctx)
@@ -773,6 +710,7 @@ func TestSubscriber_ShutdownTimeout(t *testing.T) {
 
 func TestSubscriber_AtLeastOnce(t *testing.T) {
 	requireEmulator(t)
+	t.Parallel()
 	ctx := context.Background()
 
 	spannerClient, streamName, tableName, storage := setupSubscriberTest(t, ctx)
@@ -850,6 +788,7 @@ func TestSubscriber_AtLeastOnce(t *testing.T) {
 
 func TestSubscriber_MaxInflight(t *testing.T) {
 	requireEmulator(t)
+	t.Parallel()
 	ctx := context.Background()
 
 	spannerClient, streamName, tableName, storage := setupSubscriberTest(t, ctx)

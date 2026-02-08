@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"os"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
@@ -25,10 +27,8 @@ import (
 const (
 	testProjectID    = "test-project"
 	testInstanceID   = "test-instance"
-	testDatabaseID   = "test-database"
 	testProjectPath  = "projects/" + testProjectID
 	testInstancePath = testProjectPath + "/instances/" + testInstanceID
-	testDatabasePath = testInstancePath + "/databases/" + testDatabaseID
 )
 
 // spannerEmulatorAvailable indicates whether the Spanner emulator is running.
@@ -97,9 +97,6 @@ func launchEmulatorOnDocker() func() {
 	if err := createInstance(ctx); err != nil {
 		log.Fatalf("Could not create instance: %v", err)
 	}
-	if err := createDatabase(ctx); err != nil {
-		log.Fatalf("Could not create database: %v", err)
-	}
 
 	return func() {
 		if err := container.Terminate(ctx); err != nil {
@@ -132,36 +129,38 @@ func createInstance(ctx context.Context) error {
 	return err
 }
 
-func createDatabase(ctx context.Context) error {
+// createTestDatabase creates a unique database with the given DDL statements and
+// returns the fully qualified database path.
+func createTestDatabase(ctx context.Context, t *testing.T, ddlStatements ...string) string {
+	t.Helper()
+	dbID := fmt.Sprintf("db_%s", strconv.FormatUint(rand.Uint64(), 36))
+
 	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx, spannerClientOptions...)
 	if err != nil {
-		return err
+		t.Fatalf("Failed to create database admin client: %v", err)
 	}
 	defer databaseAdminClient.Close()
 
 	op, err := databaseAdminClient.CreateDatabase(ctx, &databasepb.CreateDatabaseRequest{
 		Parent:          testInstancePath,
-		CreateStatement: fmt.Sprintf("CREATE DATABASE `%s`", testDatabaseID),
+		CreateStatement: fmt.Sprintf("CREATE DATABASE `%s`", dbID),
+		ExtraStatements: ddlStatements,
 	})
 	if err != nil {
-		return err
+		t.Fatalf("Failed to create database: %v", err)
 	}
-
-	_, err = op.Wait(ctx)
-	return err
+	if _, err := op.Wait(ctx); err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	return testInstancePath + "/databases/" + dbID
 }
 
-func createTable(ctx context.Context, databaseName, tableName string) error {
-	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx, spannerClientOptions...)
-	if err != nil {
-		return err
-	}
-	defer databaseAdminClient.Close()
+func setupSpannerPartitionStorage(t *testing.T, ctx context.Context) *SpannerPartitionStorage {
+	t.Helper()
 
-	op, err := databaseAdminClient.UpdateDatabaseDdl(ctx, &databasepb.UpdateDatabaseDdlRequest{
-		Database: databaseName,
-		Statements: []string{
-			fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+	tableName := t.Name()
+	dbPath := createTestDatabase(ctx, t,
+		fmt.Sprintf(`CREATE TABLE %s (
   PartitionToken STRING(MAX) NOT NULL,
   ParentTokens ARRAY<STRING(MAX)> NOT NULL,
   StartTimestamp TIMESTAMP NOT NULL,
@@ -175,36 +174,22 @@ func createTable(ctx context.Context, databaseName, tableName string) error {
   FinishedAt TIMESTAMP OPTIONS (allow_commit_timestamp=true),
 ) PRIMARY KEY (PartitionToken),
   ROW DELETION POLICY (OLDER_THAN(FinishedAt, INTERVAL 1 DAY))`, tableName),
-		},
-	})
-	if err != nil {
-		return err
-	}
-	return op.Wait(ctx)
-}
+	)
 
-func setupSpannerPartitionStorage(t *testing.T, ctx context.Context) *SpannerPartitionStorage {
-	t.Helper()
-
-	client, err := spanner.NewClient(ctx, testDatabasePath, spannerClientOptions...)
+	client, err := spanner.NewClient(ctx, dbPath, spannerClientOptions...)
 	if err != nil {
-		t.Error(err)
-		return nil
+		t.Fatalf("Failed to create spanner client: %v", err)
 	}
 	t.Cleanup(func() {
 		client.Close()
 	})
 
-	if err := createTable(ctx, testDatabasePath, t.Name()); err != nil {
-		t.Error(err)
-		return nil
-	}
-
-	return NewSpanner(client, t.Name())
+	return NewSpanner(client, tableName)
 }
 
 func TestSpannerPartitionStorage_InitializeRootPartition(t *testing.T) {
 	requireEmulator(t)
+	t.Parallel()
 	ctx := context.Background()
 	storage := setupSpannerPartitionStorage(t, ctx)
 
@@ -269,6 +254,7 @@ func TestSpannerPartitionStorage_InitializeRootPartition(t *testing.T) {
 
 func TestSpannerPartitionStorage_Read(t *testing.T) {
 	requireEmulator(t)
+	t.Parallel()
 	ctx := context.Background()
 	storage := setupSpannerPartitionStorage(t, ctx)
 
@@ -350,6 +336,7 @@ func TestSpannerPartitionStorage_Read(t *testing.T) {
 
 func TestSpannerPartitionStorage_AddChildPartitions(t *testing.T) {
 	requireEmulator(t)
+	t.Parallel()
 	ctx := context.Background()
 	storage := setupSpannerPartitionStorage(t, ctx)
 
@@ -419,6 +406,7 @@ func TestSpannerPartitionStorage_AddChildPartitions(t *testing.T) {
 
 func TestSpannerPartitionStorage_Update(t *testing.T) {
 	requireEmulator(t)
+	t.Parallel()
 	ctx := context.Background()
 	storage := setupSpannerPartitionStorage(t, ctx)
 
