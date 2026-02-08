@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	cloudtasks "cloud.google.com/go/cloudtasks/apiv2"
+	"cloud.google.com/go/cloudtasks/apiv2/cloudtaskspb"
 	"cloud.google.com/go/spanner"
 	database "cloud.google.com/go/spanner/admin/database/apiv1"
 	"cloud.google.com/go/spanner/admin/database/apiv1/databasepb"
@@ -21,7 +23,10 @@ import (
 	"google.golang.org/api/option"
 	"google.golang.org/api/option/internaloption"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type spannerBackend int
@@ -30,6 +35,15 @@ const (
 	backendNone     spannerBackend = iota // Spanner を利用できない
 	backendEmulator                       // エミュレータ
 	backendReal                           // 実 Spanner
+
+	// realTestInstanceID は実 Spanner テストで再利用する固定インスタンス名。
+	realTestInstanceID = "spream-test"
+
+	// cloudTasksQueuePath は削除タスクを登録する Cloud Tasks キューのパス。
+	cloudTasksQueuePath = "projects/spream/locations/us-central1/queues/spream-test-cleanup"
+
+	// cloudTasksServiceAccount は Cloud Tasks が DELETE リクエストに使用するサービスアカウント。
+	cloudTasksServiceAccount = "github-actions@spream.iam.gserviceaccount.com"
 )
 
 var (
@@ -47,19 +61,14 @@ func TestMain(m *testing.M) {
 	if projectID := os.Getenv("SPANNER_PROJECT_ID"); projectID != "" {
 		// 実 Spanner モード
 		testProjectID = projectID
-		testInstanceID = "test-" + strconv.FormatUint(rand.Uint64(), 36)
+		testInstanceID = realTestInstanceID
 		testInstancePath = fmt.Sprintf("projects/%s/instances/%s", testProjectID, testInstanceID)
 
 		ctx := context.Background()
-		if err := createRealInstance(ctx); err != nil {
-			log.Fatalf("Failed to create real Spanner instance: %v", err)
+		if err := ensureInstance(ctx); err != nil {
+			log.Fatalf("Failed to ensure Spanner instance: %v", err)
 		}
-		cleanup = func() {
-			ctx := context.Background()
-			if err := deleteInstance(ctx); err != nil {
-				log.Printf("Failed to delete instance %s: %v", testInstancePath, err)
-			}
-		}
+		// インスタンス削除は Cloud Tasks に委任するため cleanup は不要。
 		backend = backendReal
 	} else {
 		// エミュレータモード
@@ -90,13 +99,33 @@ func requireSpanner(t *testing.T) {
 	}
 }
 
-// createRealInstance は実Spannerにテスト用インスタンスを作成する。
-func createRealInstance(ctx context.Context) error {
+// ensureInstance は既存インスタンスを再利用するか、なければ新規作成する。
+// 新規作成時は先に Cloud Tasks の削除タスクを登録してからインスタンスを作成する。
+func ensureInstance(ctx context.Context) error {
 	instanceAdminClient, err := instance.NewInstanceAdminClient(ctx, spannerClientOptions...)
 	if err != nil {
 		return err
 	}
 	defer instanceAdminClient.Close()
+
+	// インスタンスが既に存在すれば再利用する。
+	_, err = instanceAdminClient.GetInstance(ctx, &instancepb.GetInstanceRequest{
+		Name: testInstancePath,
+	})
+	if err == nil {
+		log.Printf("Reusing existing Spanner instance: %s", testInstancePath)
+		return nil
+	}
+	if status.Code(err) != codes.NotFound {
+		return fmt.Errorf("GetInstance failed: %w", err)
+	}
+
+	// インスタンスが存在しないので新規作成する。
+	// 先に Cloud Tasks で削除タスクを登録してからインスタンスを作成する。
+	// タスク作成に失敗した場合はインスタンスを作成しない(課金を防ぐ)。
+	if err := scheduleInstanceDeletion(ctx); err != nil {
+		return fmt.Errorf("scheduleInstanceDeletion failed (aborting instance creation): %w", err)
+	}
 
 	op, err := instanceAdminClient.CreateInstance(ctx, &instancepb.CreateInstanceRequest{
 		Parent:     "projects/" + testProjectID,
@@ -108,24 +137,54 @@ func createRealInstance(ctx context.Context) error {
 		},
 	})
 	if err != nil {
-		return err
+		// 並行テスト実行で既に作成済みの場合は再利用する。
+		if status.Code(err) == codes.AlreadyExists {
+			log.Printf("Instance already created by another process, reusing: %s", testInstancePath)
+			return nil
+		}
+		return fmt.Errorf("CreateInstance failed: %w", err)
 	}
 
-	_, err = op.Wait(ctx)
-	return err
+	if _, err = op.Wait(ctx); err != nil {
+		return fmt.Errorf("CreateInstance operation failed: %w", err)
+	}
+	log.Printf("Created new Spanner instance: %s", testInstancePath)
+	return nil
 }
 
-// deleteInstance はテスト用インスタンスを削除する。
-func deleteInstance(ctx context.Context) error {
-	instanceAdminClient, err := instance.NewInstanceAdminClient(ctx, spannerClientOptions...)
+// scheduleInstanceDeletion は Cloud Tasks で55分後にインスタンスを削除する HTTP タスクを作成する。
+// GitHub Actions SA の OAuthToken を使用する。
+func scheduleInstanceDeletion(ctx context.Context) error {
+	client, err := cloudtasks.NewClient(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("cloudtasks.NewClient: %w", err)
 	}
-	defer instanceAdminClient.Close()
+	defer client.Close()
 
-	return instanceAdminClient.DeleteInstance(ctx, &instancepb.DeleteInstanceRequest{
-		Name: testInstancePath,
+	task := &cloudtaskspb.Task{
+		ScheduleTime: timestamppb.New(time.Now().Add(55 * time.Minute)),
+		MessageType: &cloudtaskspb.Task_HttpRequest{
+			HttpRequest: &cloudtaskspb.HttpRequest{
+				HttpMethod: cloudtaskspb.HttpMethod_DELETE,
+				Url:        fmt.Sprintf("https://spanner.googleapis.com/v1/%s", testInstancePath),
+				AuthorizationHeader: &cloudtaskspb.HttpRequest_OauthToken{
+					OauthToken: &cloudtaskspb.OAuthToken{
+						ServiceAccountEmail: cloudTasksServiceAccount,
+					},
+				},
+			},
+		},
+	}
+
+	created, err := client.CreateTask(ctx, &cloudtaskspb.CreateTaskRequest{
+		Parent: cloudTasksQueuePath,
+		Task:   task,
 	})
+	if err != nil {
+		return fmt.Errorf("CreateTask: %w", err)
+	}
+	log.Printf("Scheduled instance deletion task: %s (executes at %s)", created.GetName(), created.GetScheduleTime().AsTime())
+	return nil
 }
 
 func generateUniqueName(prefix string) string {

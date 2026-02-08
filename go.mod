@@ -5,11 +5,13 @@ go 1.24.0
 toolchain go1.24.1
 
 require (
+	cloud.google.com/go/cloudtasks v1.13.7
 	cloud.google.com/go/spanner v1.87.0
 	github.com/testcontainers/testcontainers-go/modules/gcloud v0.40.0
 	golang.org/x/sync v0.19.0
 	google.golang.org/api v0.257.0
 	google.golang.org/grpc v1.77.0
+	google.golang.org/protobuf v1.36.10
 )
 
 require (
@@ -98,7 +100,6 @@ require (
 	google.golang.org/genproto v0.0.0-20250603155806-513f23925822 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20251111163417-95abcf5c77ba // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251124214823-79d6a2a48846 // indirect
-	google.golang.org/protobuf v1.36.10 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
