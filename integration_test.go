@@ -50,7 +50,7 @@ func TestMain(m *testing.M) {
 	if projectID := os.Getenv("SPANNER_PROJECT_ID"); projectID != "" {
 		// 実 Spanner モード
 		testProjectID = projectID
-		testInstanceID = generateUniqueName("test")
+		testInstanceID = "test-" + strconv.FormatUint(rand.Uint64(), 36)
 		testInstancePath = fmt.Sprintf("projects/%s/instances/%s", testProjectID, testInstanceID)
 
 		ctx := context.Background()

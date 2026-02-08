@@ -68,6 +68,9 @@ func newInflightTracker(maxInflight int) *inflightTracker {
 }
 
 // sendWatermark sends a watermark to the channel. It does nothing if watermark is zero.
+// Non-blocking: if the channel is full (consumer exited or slow), the watermark is dropped.
+// Dropping watermarks is safe because the at-least-once guarantee allows re-processing
+// from the last committed watermark on restart.
 func (t *inflightTracker) sendWatermark(watermark time.Time) {
 	if watermark.IsZero() {
 		return
@@ -75,16 +78,24 @@ func (t *inflightTracker) sendWatermark(watermark time.Time) {
 	t.sendMu.RLock()
 	defer t.sendMu.RUnlock()
 	if !t.closed.Load() {
-		t.watermarks <- watermark
+		select {
+		case t.watermarks <- watermark:
+		default:
+		}
 	}
 }
 
 // sendError sends an error to the channel.
+// Non-blocking: if the channel is full, the error is dropped.
+// The first error triggers errgroup cancellation, so subsequent errors are not critical.
 func (t *inflightTracker) sendError(err error) {
 	t.sendMu.RLock()
 	defer t.sendMu.RUnlock()
 	if !t.closed.Load() {
-		t.errors <- err
+		select {
+		case t.errors <- err:
+		default:
+		}
 	}
 }
 

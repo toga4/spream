@@ -298,6 +298,12 @@ func (s *Subscriber) runMainLoop() {
 					s.drain()
 					continue
 				}
+				// Shutdown/Close によるコンテキストキャンセル由来のエラーは
+				// fail に記録しない。exitError が shutdown/closed フラグに基づいて
+				// 適切なエラーを返す。
+				if s.ctx.Err() != nil {
+					return
+				}
 				s.fail(err)
 				return
 			}
