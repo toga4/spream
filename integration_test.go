@@ -542,8 +542,13 @@ func TestSubscriber_Shutdown(t *testing.T) {
 
 	// Consumer は処理完了を通知するチャネルを使い、Shutdown 後にドレインされることを検証する。
 	var completed atomic.Int32
+	consumerStarted := make(chan struct{}, 1)
 	gate := make(chan struct{})
 	consumer := spream.ConsumerFunc(func(_ context.Context, _ *spream.DataChangeRecord) error {
+		select {
+		case consumerStarted <- struct{}{}:
+		default:
+		}
 		<-gate // Shutdown が呼ばれるまでブロックする。
 		completed.Add(1)
 		return nil
@@ -569,8 +574,13 @@ func TestSubscriber_Shutdown(t *testing.T) {
 		t.Fatalf("Failed to insert rows: %v", err)
 	}
 
-	// Consumer が呼ばれるのを待つ。
-	time.Sleep(5 * time.Second)
+	// Consumer が実際にブロック状態に入るまで待つ。
+	select {
+	case <-consumerStarted:
+	case <-time.After(30 * time.Second):
+		subscriber.Close()
+		t.Fatal("Consumer was not called within timeout")
+	}
 
 	// Subscribe は ErrShutdown を即座に返す。
 	shutdownDone := make(chan error, 1)
@@ -614,8 +624,13 @@ func TestSubscriber_Close(t *testing.T) {
 
 	spannerClient, streamName, tableName, storage := setupSubscriberTest(t, ctx)
 
-	// Consumer を永久にブロックさせる。
+	// Consumer を永久にブロックさせる。Consumer が呼ばれたことをチャネルで通知する。
+	consumerStarted := make(chan struct{}, 1)
 	consumer := spream.ConsumerFunc(func(ctx context.Context, _ *spream.DataChangeRecord) error {
+		select {
+		case consumerStarted <- struct{}{}:
+		default:
+		}
 		<-ctx.Done()
 		return ctx.Err()
 	})
@@ -639,8 +654,13 @@ func TestSubscriber_Close(t *testing.T) {
 		t.Fatalf("Failed to insert rows: %v", err)
 	}
 
-	// Consumer が呼ばれるのを待つ。
-	time.Sleep(5 * time.Second)
+	// Consumer が実際にブロック状態に入るまで待つ。
+	select {
+	case <-consumerStarted:
+	case <-time.After(30 * time.Second):
+		subscriber.Close()
+		t.Fatal("Consumer was not called within timeout")
+	}
 
 	// Close はインフライト処理の完了を待たずに即座に停止する。
 	if err := subscriber.Close(); err != nil {
@@ -704,8 +724,13 @@ func TestSubscriber_ShutdownTimeout(t *testing.T) {
 
 	spannerClient, streamName, tableName, storage := setupSubscriberTest(t, ctx)
 
-	// Consumer を永久にブロックさせる。
+	// Consumer を永久にブロックさせる。Consumer が呼ばれたことをチャネルで通知する。
+	consumerStarted := make(chan struct{}, 1)
 	consumer := spream.ConsumerFunc(func(ctx context.Context, _ *spream.DataChangeRecord) error {
+		select {
+		case consumerStarted <- struct{}{}:
+		default:
+		}
 		<-ctx.Done()
 		return ctx.Err()
 	})
@@ -729,8 +754,13 @@ func TestSubscriber_ShutdownTimeout(t *testing.T) {
 		t.Fatalf("Failed to insert rows: %v", err)
 	}
 
-	// Consumer が呼ばれるのを待つ。
-	time.Sleep(5 * time.Second)
+	// Consumer が実際にブロック状態に入るまで待つ。
+	select {
+	case <-consumerStarted:
+	case <-time.After(30 * time.Second):
+		subscriber.Close()
+		t.Fatal("Consumer was not called within timeout")
+	}
 
 	// 短いタイムアウトで Shutdown する。Consumer がブロックしているのでタイムアウトする。
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
