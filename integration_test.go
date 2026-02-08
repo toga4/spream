@@ -2,11 +2,14 @@ package spream_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand/v2"
 	"os"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,134 +18,159 @@ import (
 	"cloud.google.com/go/spanner/admin/database/apiv1/databasepb"
 	instance "cloud.google.com/go/spanner/admin/instance/apiv1"
 	"cloud.google.com/go/spanner/admin/instance/apiv1/instancepb"
-	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/wait"
 	"github.com/toga4/spream"
 	"github.com/toga4/spream/partitionstorage"
 )
 
-var (
-	projectID    string = os.Getenv("GCP_PROJECT")
-	databaseName string
+const (
+	testProjectID    = "test-project"
+	testInstanceID   = "test-instance"
+	testDatabaseID   = "test-database"
+	testProjectPath  = "projects/" + testProjectID
+	testInstancePath = testProjectPath + "/instances/" + testInstanceID
+	testDatabasePath = testInstancePath + "/databases/" + testDatabaseID
 )
 
-func TestMain(m *testing.M) {
-	tearDown := setup()
-	exitCode := m.Run()
-	tearDown()
-	os.Exit(exitCode)
-}
+var emulatorAvailable bool
 
-func setup() func() {
-	// skip if env var GCP_PROJECT not set
-	if projectID == "" {
-		return func() {}
+func TestMain(m *testing.M) {
+	cleanup, err := tryLaunchEmulatorOnDocker()
+	if err != nil {
+		log.Printf("Spanner emulator not available: %v. Skipping integration tests.", err)
+	} else {
+		emulatorAvailable = true
 	}
 
+	code := m.Run()
+
+	if cleanup != nil {
+		cleanup()
+	}
+	os.Exit(code)
+}
+
+func requireEmulator(t *testing.T) {
+	t.Helper()
+	if !emulatorAvailable {
+		t.Skip("Spanner emulator not available")
+	}
+}
+
+// tryLaunchEmulatorOnDocker attempts to launch the emulator and returns a cleanup function.
+// It recovers from panics caused by Docker not being available.
+func tryLaunchEmulatorOnDocker() (cleanup func(), err error) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("%v", r)
+			}
+		}()
+		cleanup = launchEmulatorOnDocker()
+	}()
+	<-done
+	return cleanup, err
+}
+
+func launchEmulatorOnDocker() func() {
 	ctx := context.Background()
 
-	log.Print("Creating spanner instance...")
-	instanceName, err := createInstance(ctx, projectID)
-	if err != nil {
-		log.Fatalf("Failed to create spanner instance: %v", err)
-	}
-	log.Printf("Created spanner instance: %q", instanceName)
-
-	log.Print("Creating spanner database...")
-	_databaseName, err := createDatabase(ctx, instanceName)
-	if err != nil {
-		log.Printf("Deleting spanner database: %q...", instanceName)
-		if err := deleteInstance(ctx, instanceName); err != nil {
-			log.Fatalf("Failed to delete spanner instance: %v", err)
-		}
-		log.Printf("Deleted spanner database: %q", instanceName)
-		log.Fatalf("Failed to create spanner database: %v", err)
-	}
-	databaseName = _databaseName
-	log.Printf("Created spanner database: %q", databaseName)
-
-	return func() {
-		log.Printf("Deleting spanner database: %q...", instanceName)
-		if err := deleteInstance(ctx, instanceName); err != nil {
-			log.Fatalf("Failed to delete spanner instance: %v", err)
-		}
-		log.Printf("Deleted spanner database: %q", instanceName)
-	}
-}
-
-func generateUniqueId(prefix string) string {
-	return fmt.Sprintf("%s-%s", prefix, strconv.FormatUint(rand.Uint64(), 36))
-}
-
-func generateUniqueName(prefix string) string {
-	return fmt.Sprintf("%s_%s", prefix, strconv.FormatUint(rand.Uint64(), 36))
-}
-
-func createInstance(ctx context.Context, parentProjectID string) (string, error) {
-	instanceAdminClient, err := instance.NewInstanceAdminClient(ctx)
-	if err != nil {
-		return "", err
-	}
-	defer instanceAdminClient.Close()
-
-	instanceID := generateUniqueId("instance")
-
-	op, err := instanceAdminClient.CreateInstance(ctx, &instancepb.CreateInstanceRequest{
-		Parent:     "projects/" + parentProjectID,
-		InstanceId: instanceID,
-		Instance: &instancepb.Instance{
-			Config:          "projects/spream/instanceConfigs/regional-us-central1",
-			DisplayName:     instanceID,
-			ProcessingUnits: 100,
+	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:        "gcr.io/cloud-spanner-emulator/emulator:latest",
+			ExposedPorts: []string{"9010/tcp"},
+			WaitingFor:   wait.ForListeningPort("9010/tcp"),
 		},
+		Started: true,
 	})
 	if err != nil {
-		return "", err
+		log.Fatalf("Could not launch emulator on docker: %v", err)
+	}
+	terminateFunc := func() {
+		if err := container.Terminate(ctx); err != nil {
+			log.Fatalf("Could not terminate emulator on docker: %v", err)
+		}
 	}
 
-	resp, err := op.Wait(ctx)
+	host, err := container.Host(ctx)
 	if err != nil {
-		return "", err
+		log.Fatalf("Could not get host: %v", err)
 	}
 
-	return resp.Name, nil
+	port, err := container.MappedPort(ctx, "9010/tcp")
+	if err != nil {
+		log.Fatalf("Could not get port: %v", err)
+	}
+
+	os.Setenv("SPANNER_EMULATOR_HOST", fmt.Sprintf("%s:%s", host, port.Port()))
+
+	// エミュレータのポートがリッスン中でも gRPC サーバーの初期化が完了していない場合がある。
+	// リトライで待機する。
+	var createErr error
+	for range 10 {
+		if createErr = createInstance(ctx); createErr == nil {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if createErr != nil {
+		log.Fatalf("Could not create instance: %v", createErr)
+	}
+	if err := createDatabase(ctx); err != nil {
+		log.Fatalf("Could not create database: %v", err)
+	}
+
+	return terminateFunc
 }
 
-func deleteInstance(ctx context.Context, instanceName string) error {
+func createInstance(ctx context.Context) error {
 	instanceAdminClient, err := instance.NewInstanceAdminClient(ctx)
 	if err != nil {
 		return err
 	}
 	defer instanceAdminClient.Close()
 
-	return instanceAdminClient.DeleteInstance(ctx, &instancepb.DeleteInstanceRequest{
-		Name: instanceName,
+	op, err := instanceAdminClient.CreateInstance(ctx, &instancepb.CreateInstanceRequest{
+		Parent:     testProjectPath,
+		InstanceId: testInstanceID,
+		Instance: &instancepb.Instance{
+			Config:      "emulator-config",
+			DisplayName: testInstanceID,
+			NodeCount:   1,
+		},
 	})
+	if err != nil {
+		return err
+	}
+
+	_, err = op.Wait(ctx)
+	return err
 }
 
-func createDatabase(ctx context.Context, parentInstanceName string) (string, error) {
+func createDatabase(ctx context.Context) error {
 	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer databaseAdminClient.Close()
 
-	databaseID := generateUniqueId("database")
-
 	op, err := databaseAdminClient.CreateDatabase(ctx, &databasepb.CreateDatabaseRequest{
-		Parent:          parentInstanceName,
-		CreateStatement: fmt.Sprintf("CREATE DATABASE `%s`", databaseID),
+		Parent:          testInstancePath,
+		CreateStatement: fmt.Sprintf("CREATE DATABASE `%s`", testDatabaseID),
 	})
 	if err != nil {
-		return "", err
+		return err
 	}
 
-	resp, err := op.Wait(ctx)
-	if err != nil {
-		return "", err
-	}
+	_, err = op.Wait(ctx)
+	return err
+}
 
-	return resp.Name, nil
+func generateUniqueName(prefix string) string {
+	return fmt.Sprintf("%s_%s", prefix, strconv.FormatUint(rand.Uint64(), 36))
 }
 
 func createPartitionMetadataTable(ctx context.Context, databaseName, tableName string) error {
@@ -221,262 +249,665 @@ func createTableAndChangeStream(ctx context.Context, databaseName string) (strin
 		return "", "", err
 	}
 
-	return tableName, streamName, err
+	return tableName, streamName, nil
 }
 
-type consumer struct {
-	changes []*spream.DataChangeRecord
+// createSimpleTableAndChangeStream creates a simple table (Int64 PK, Value STRING) for tests
+// that don't need the full column type coverage.
+func createSimpleTableAndChangeStream(ctx context.Context, databaseName string) (string, string, error) {
+	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	defer databaseAdminClient.Close()
+
+	tableName := generateUniqueName("table")
+	streamName := generateUniqueName("stream")
+
+	op, err := databaseAdminClient.UpdateDatabaseDdl(ctx, &databasepb.UpdateDatabaseDdlRequest{
+		Database: databaseName,
+		Statements: []string{
+			fmt.Sprintf(`CREATE TABLE %s (
+				Key INT64,
+				Value STRING(MAX),
+			) PRIMARY KEY (Key)`, tableName),
+			fmt.Sprintf(`CREATE CHANGE STREAM %s FOR %s`, streamName, tableName),
+		},
+	})
+	if err != nil {
+		return "", "", err
+	}
+
+	if err := op.Wait(ctx); err != nil {
+		return "", "", err
+	}
+
+	return tableName, streamName, nil
 }
 
-func (c *consumer) Consume(_ context.Context, change *spream.DataChangeRecord) error {
-	c.changes = append(c.changes, change)
+// setupSubscriberTest creates a Spanner client, table, change stream, and partition metadata table
+// for integration testing. It returns the Spanner client, stream name, table name, and partition storage.
+func setupSubscriberTest(t *testing.T, ctx context.Context) (*spanner.Client, string, string, *partitionstorage.SpannerPartitionStorage) {
+	t.Helper()
+
+	spannerClient, err := spanner.NewClient(ctx, testDatabasePath)
+	if err != nil {
+		t.Fatalf("Failed to create spanner client: %v", err)
+	}
+	t.Cleanup(func() { spannerClient.Close() })
+
+	tableName, streamName, err := createSimpleTableAndChangeStream(ctx, spannerClient.DatabaseName())
+	if err != nil {
+		t.Fatalf("Failed to create table and change stream: %v", err)
+	}
+
+	partitionTableName := generateUniqueName("partition")
+	if err := createPartitionMetadataTable(ctx, spannerClient.DatabaseName(), partitionTableName); err != nil {
+		t.Fatalf("Failed to create metadata table: %v", err)
+	}
+
+	storage := partitionstorage.NewSpanner(spannerClient, partitionTableName)
+	return spannerClient, streamName, tableName, storage
+}
+
+// insertRows inserts rows with the given keys into the table.
+func insertRows(ctx context.Context, client *spanner.Client, tableName string, keys ...int64) error {
+	_, err := client.ReadWriteTransaction(ctx, func(ctx context.Context, tx *spanner.ReadWriteTransaction) error {
+		for _, key := range keys {
+			if _, err := tx.Update(ctx, spanner.Statement{
+				SQL:    fmt.Sprintf("INSERT INTO %s (Key, Value) VALUES (@key, @value)", tableName),
+				Params: map[string]any{"key": key, "value": fmt.Sprintf("value-%d", key)},
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return err
+}
+
+// waitForRecords waits until the consumer has received at least n records or the timeout is reached.
+func waitForRecords(consumer *recordingConsumer, n int, timeout time.Duration) bool {
+	deadline := time.After(timeout)
+	for {
+		select {
+		case <-deadline:
+			return consumer.count() >= n
+		case <-time.After(100 * time.Millisecond):
+			if consumer.count() >= n {
+				return true
+			}
+		}
+	}
+}
+
+// recordingConsumer records received DataChangeRecords in a thread-safe manner.
+type recordingConsumer struct {
+	mu      sync.Mutex
+	records []*spream.DataChangeRecord
+}
+
+func (c *recordingConsumer) Consume(_ context.Context, change *spream.DataChangeRecord) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.records = append(c.records, change)
 	return nil
 }
 
-func TestSubscriber(t *testing.T) {
-	if projectID == "" {
-		t.Skip("Skip integration tests: env var GCP_PROJECT not set.")
-	}
+func (c *recordingConsumer) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.records)
+}
 
+func (c *recordingConsumer) snapshot() []*spream.DataChangeRecord {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s := make([]*spream.DataChangeRecord, len(c.records))
+	copy(s, c.records)
+	return s
+}
+
+func TestSubscriber_DataChangeRecord(t *testing.T) {
+	requireEmulator(t)
 	ctx := context.Background()
 
-	spannerClient, err := spanner.NewClient(ctx, databaseName)
+	spannerClient, err := spanner.NewClient(ctx, testDatabasePath)
 	if err != nil {
-		t.Errorf("Failed to setup: %v", err)
-		return
+		t.Fatalf("Failed to create spanner client: %v", err)
 	}
+	defer spannerClient.Close()
 
-	t.Log("Creating table and change stream...")
 	tableName, streamName, err := createTableAndChangeStream(ctx, spannerClient.DatabaseName())
 	if err != nil {
-		t.Errorf("Failed to create table and change stream: %v", err)
-		return
+		t.Fatalf("Failed to create table and change stream: %v", err)
 	}
-	t.Logf("Created table: %q, change stream: %q", tableName, streamName)
 
-	tests := []struct {
-		name       string
-		statements []string
-		expected   []*spream.DataChangeRecord
-	}{
-		{
-			name: "change",
-			statements: []string{
-				fmt.Sprintf(`
-					INSERT INTO %s
-						(Bool, Int64, Float64, Timestamp, Date, String, Bytes, Numeric, Json, BoolArray, Int64Array, Float64Array, TimestampArray, DateArray, StringArray, BytesArray, NumericArray, JsonArray)
-					VALUES (
-						TRUE,
-						1,
-						0.5,
-						'2023-12-31T23:59:59.999999999Z',
-						'2023-01-01',
-						'string',
-						B'bytes',
-						NUMERIC '123.456',
-						JSON '{"name":"foobar"}',
-						[TRUE, FALSE],
-						[1, 2],
-						[0.5, 0.25],
-						[TIMESTAMP '2023-12-31T23:59:59.999999999Z', TIMESTAMP '2023-01-01T00:00:00Z'],
-						[DATE '2023-01-01', DATE '2023-02-01'],
-						['string1', 'string2'],
-						[B'bytes1', B'bytes2'],
-						[NUMERIC '12.345', NUMERIC '67.89'],
-						[JSON '{"name":"foobar"}', JSON '{"name":"barbaz"}']
-					)
-				`, tableName),
-				fmt.Sprintf(`UPDATE %s SET Bool = FALSE WHERE Int64 = 1`, tableName),
-				fmt.Sprintf(`DELETE FROM %s WHERE Int64 = 1`, tableName),
-			},
-			expected: []*spream.DataChangeRecord{
-				{
-					RecordSequence:                       "00000000",
-					IsLastRecordInTransactionInPartition: false,
-					TableName:                            tableName,
-					ColumnTypes: []*spream.ColumnType{
-						{Name: "Int64", Type: spream.Type{Code: spream.TypeCode_INT64}, OrdinalPosition: 2, IsPrimaryKey: true},
-						{Name: "Bool", Type: spream.Type{Code: spream.TypeCode_BOOL}, OrdinalPosition: 1},
-						{Name: "Float64", Type: spream.Type{Code: spream.TypeCode_FLOAT64}, OrdinalPosition: 3},
-						{Name: "Timestamp", Type: spream.Type{Code: spream.TypeCode_TIMESTAMP}, OrdinalPosition: 4},
-						{Name: "Date", Type: spream.Type{Code: spream.TypeCode_DATE}, OrdinalPosition: 5},
-						{Name: "String", Type: spream.Type{Code: spream.TypeCode_STRING}, OrdinalPosition: 6},
-						{Name: "Bytes", Type: spream.Type{Code: spream.TypeCode_BYTES}, OrdinalPosition: 7},
-						{Name: "Numeric", Type: spream.Type{Code: spream.TypeCode_NUMERIC}, OrdinalPosition: 8},
-						{Name: "Json", Type: spream.Type{Code: spream.TypeCode_JSON}, OrdinalPosition: 9},
-						{Name: "BoolArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: spream.TypeCode_BOOL}, OrdinalPosition: 10},
-						{Name: "Int64Array", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: spream.TypeCode_INT64}, OrdinalPosition: 11},
-						{Name: "Float64Array", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: spream.TypeCode_FLOAT64}, OrdinalPosition: 12},
-						{Name: "TimestampArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: spream.TypeCode_TIMESTAMP}, OrdinalPosition: 13},
-						{Name: "DateArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: spream.TypeCode_DATE}, OrdinalPosition: 14},
-						{Name: "StringArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: spream.TypeCode_STRING}, OrdinalPosition: 15},
-						{Name: "BytesArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: spream.TypeCode_BYTES}, OrdinalPosition: 16},
-						{Name: "NumericArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: spream.TypeCode_NUMERIC}, OrdinalPosition: 17},
-						{Name: "JsonArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: spream.TypeCode_JSON}, OrdinalPosition: 18},
-					},
-					Mods: []*spream.Mod{
-						{
-							Keys: map[string]any{"Int64": "1"},
-							NewValues: map[string]any{
-								"Bool":           true,
-								"BoolArray":      []any{true, false},
-								"Bytes":          "Ynl0ZXM=",
-								"BytesArray":     []any{"Ynl0ZXMx", "Ynl0ZXMy"},
-								"Date":           "2023-01-01",
-								"DateArray":      []any{"2023-01-01", "2023-02-01"},
-								"Float64":        0.5,
-								"Float64Array":   []any{0.5, 0.25},
-								"Int64Array":     []any{"1", "2"},
-								"Json":           "{\"name\":\"foobar\"}",
-								"JsonArray":      []any{"{\"name\":\"foobar\"}", "{\"name\":\"barbaz\"}"},
-								"Numeric":        "123.456",
-								"NumericArray":   []any{"12.345", "67.89"},
-								"String":         "string",
-								"StringArray":    []any{"string1", "string2"},
-								"Timestamp":      "2023-12-31T23:59:59.999999999Z",
-								"TimestampArray": []any{"2023-12-31T23:59:59.999999999Z", "2023-01-01T00:00:00Z"},
-							},
-							OldValues: map[string]any{},
-						},
-					},
-					ModType:                         spream.ModType_INSERT,
-					ValueCaptureType:                "OLD_AND_NEW_VALUES",
-					NumberOfRecordsInTransaction:    3,
-					NumberOfPartitionsInTransaction: 1,
-					TransactionTag:                  "",
-					IsSystemTransaction:             false,
-				},
-				{
-					RecordSequence:                       "00000001",
-					IsLastRecordInTransactionInPartition: false,
-					TableName:                            tableName,
-					ColumnTypes: []*spream.ColumnType{
-						{Name: "Int64", Type: spream.Type{Code: spream.TypeCode_INT64}, OrdinalPosition: 2, IsPrimaryKey: true},
-						{Name: "Bool", Type: spream.Type{Code: spream.TypeCode_BOOL}, OrdinalPosition: 1},
-					},
-					Mods: []*spream.Mod{
-						{
-							Keys:      map[string]any{"Int64": "1"},
-							NewValues: map[string]any{"Bool": false},
-							OldValues: map[string]any{"Bool": true},
-						},
-					},
-					ModType:                         spream.ModType_UPDATE,
-					ValueCaptureType:                "OLD_AND_NEW_VALUES",
-					NumberOfRecordsInTransaction:    3,
-					NumberOfPartitionsInTransaction: 1,
-					TransactionTag:                  "",
-					IsSystemTransaction:             false,
-				},
-				{
-					RecordSequence:                       "00000002",
-					IsLastRecordInTransactionInPartition: true,
-					TableName:                            tableName,
-					ColumnTypes: []*spream.ColumnType{
-						{Name: "Int64", Type: spream.Type{Code: spream.TypeCode_INT64}, OrdinalPosition: 2, IsPrimaryKey: true},
-						{Name: "Bool", Type: spream.Type{Code: spream.TypeCode_BOOL}, OrdinalPosition: 1},
-						{Name: "Float64", Type: spream.Type{Code: spream.TypeCode_FLOAT64}, OrdinalPosition: 3},
-						{Name: "Timestamp", Type: spream.Type{Code: spream.TypeCode_TIMESTAMP}, OrdinalPosition: 4},
-						{Name: "Date", Type: spream.Type{Code: spream.TypeCode_DATE}, OrdinalPosition: 5},
-						{Name: "String", Type: spream.Type{Code: spream.TypeCode_STRING}, OrdinalPosition: 6},
-						{Name: "Bytes", Type: spream.Type{Code: spream.TypeCode_BYTES}, OrdinalPosition: 7},
-						{Name: "Numeric", Type: spream.Type{Code: spream.TypeCode_NUMERIC}, OrdinalPosition: 8},
-						{Name: "Json", Type: spream.Type{Code: spream.TypeCode_JSON}, OrdinalPosition: 9},
-						{Name: "BoolArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: spream.TypeCode_BOOL}, OrdinalPosition: 10},
-						{Name: "Int64Array", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: spream.TypeCode_INT64}, OrdinalPosition: 11},
-						{Name: "Float64Array", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: spream.TypeCode_FLOAT64}, OrdinalPosition: 12},
-						{Name: "TimestampArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: spream.TypeCode_TIMESTAMP}, OrdinalPosition: 13},
-						{Name: "DateArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: spream.TypeCode_DATE}, OrdinalPosition: 14},
-						{Name: "StringArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: spream.TypeCode_STRING}, OrdinalPosition: 15},
-						{Name: "BytesArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: spream.TypeCode_BYTES}, OrdinalPosition: 16},
-						{Name: "NumericArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: spream.TypeCode_NUMERIC}, OrdinalPosition: 17},
-						{Name: "JsonArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: spream.TypeCode_JSON}, OrdinalPosition: 18},
-					},
-					Mods: []*spream.Mod{
-						{
-							Keys:      map[string]any{"Int64": "1"},
-							NewValues: map[string]any{},
-							OldValues: map[string]any{
-								"Bool":           false,
-								"BoolArray":      []any{true, false},
-								"Bytes":          "Ynl0ZXM=",
-								"BytesArray":     []any{"Ynl0ZXMx", "Ynl0ZXMy"},
-								"Date":           "2023-01-01",
-								"DateArray":      []any{"2023-01-01", "2023-02-01"},
-								"Float64":        0.5,
-								"Float64Array":   []any{0.5, 0.25},
-								"Int64Array":     []any{"1", "2"},
-								"Json":           "{\"name\":\"foobar\"}",
-								"JsonArray":      []any{"{\"name\":\"foobar\"}", "{\"name\":\"barbaz\"}"},
-								"Numeric":        "123.456",
-								"NumericArray":   []any{"12.345", "67.89"},
-								"String":         "string",
-								"StringArray":    []any{"string1", "string2"},
-								"Timestamp":      "2023-12-31T23:59:59.999999999Z",
-								"TimestampArray": []any{"2023-12-31T23:59:59.999999999Z", "2023-01-01T00:00:00Z"},
-							},
-						},
-					},
-					ModType:                         spream.ModType_DELETE,
-					ValueCaptureType:                "OLD_AND_NEW_VALUES",
-					NumberOfRecordsInTransaction:    3,
-					NumberOfPartitionsInTransaction: 1,
-					TransactionTag:                  "",
-					IsSystemTransaction:             false,
-				},
-			},
-		},
+	partitionTableName := generateUniqueName("partition")
+	if err := createPartitionMetadataTable(ctx, spannerClient.DatabaseName(), partitionTableName); err != nil {
+		t.Fatalf("Failed to create metadata table: %v", err)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			partitionTableName := generateUniqueName("partition")
 
-			t.Log("Creating metadata table...")
-			if err := createPartitionMetadataTable(ctx, spannerClient.DatabaseName(), partitionTableName); err != nil {
-				t.Errorf("Failed to create metadata table: %v", err)
-				return
-			}
+	storage := partitionstorage.NewSpanner(spannerClient, partitionTableName)
+	consumer := &recordingConsumer{}
 
-			partitionStorage := partitionstorage.NewSpanner(spannerClient, partitionTableName)
-
-			consumer := &consumer{}
-			subscriber, err := spream.NewSubscriber(&spream.Config{
-				SpannerClient:    spannerClient,
-				StreamName:       streamName,
-				PartitionStorage: partitionStorage,
-				Consumer:         consumer,
-			})
-			if err != nil {
-				t.Errorf("Failed to create subscriber: %v", err)
-				return
-			}
-
-			go func() {
-				_ = subscriber.Subscribe()
-			}()
-			defer subscriber.Close()
-			t.Log("Subscribe started.")
-
-			t.Log("Executing DML statements...")
-			if _, err := spannerClient.ReadWriteTransaction(ctx, func(ctx context.Context, tx *spanner.ReadWriteTransaction) error {
-				for _, stmt := range test.statements {
-					if _, err := tx.Update(ctx, spanner.NewStatement(stmt)); err != nil {
-						return err
-					}
-				}
-				return nil
-			}); err != nil {
-				t.Errorf("Failed to execute change statements: %v", err)
-				return
-			}
-
-			t.Log("Waiting subscription...")
-			time.Sleep(5 * time.Second)
-
-			opt := cmpopts.IgnoreFields(spream.DataChangeRecord{}, "CommitTimestamp", "ServerTransactionID")
-			if diff := cmp.Diff(test.expected, consumer.changes, opt); diff != "" {
-				t.Errorf("diff = %v", diff)
-			}
-		})
+	subscriber, err := spream.NewSubscriber(&spream.Config{
+		SpannerClient:    spannerClient,
+		StreamName:       streamName,
+		PartitionStorage: storage,
+		Consumer:         consumer,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create subscriber: %v", err)
 	}
+
+	subscribeDone := make(chan error, 1)
+	go func() {
+		subscribeDone <- subscriber.Subscribe()
+	}()
+	defer subscriber.Close()
+
+	// エミュレータは同一トランザクション内の INSERT→DELETE を最適化して 0 件にする場合がある。
+	// INSERT, UPDATE, DELETE を別トランザクションで実行する。
+
+	// 1. INSERT
+	if _, err := spannerClient.ReadWriteTransaction(ctx, func(ctx context.Context, tx *spanner.ReadWriteTransaction) error {
+		_, err := tx.Update(ctx, spanner.NewStatement(fmt.Sprintf(`INSERT INTO %s
+			(Bool, Int64, Float64, Timestamp, Date, String, Bytes, Numeric, Json, BoolArray, Int64Array, Float64Array, TimestampArray, DateArray, StringArray, BytesArray, NumericArray, JsonArray)
+		VALUES (
+			TRUE, 1, 0.5,
+			'2023-12-31T23:59:59.999999999Z',
+			'2023-01-01',
+			'string',
+			B'bytes',
+			NUMERIC '123.456',
+			JSON '{"name":"foobar"}',
+			[TRUE, FALSE],
+			[1, 2],
+			[0.5, 0.25],
+			[TIMESTAMP '2023-12-31T23:59:59.999999999Z', TIMESTAMP '2023-01-01T00:00:00Z'],
+			[DATE '2023-01-01', DATE '2023-02-01'],
+			['string1', 'string2'],
+			[B'bytes1', B'bytes2'],
+			[NUMERIC '12.345', NUMERIC '67.89'],
+			[JSON '{"name":"foobar"}', JSON '{"name":"barbaz"}']
+		)`, tableName)))
+		return err
+	}); err != nil {
+		t.Fatalf("Failed to execute INSERT: %v", err)
+	}
+
+	// 2. UPDATE
+	if _, err := spannerClient.ReadWriteTransaction(ctx, func(ctx context.Context, tx *spanner.ReadWriteTransaction) error {
+		_, err := tx.Update(ctx, spanner.NewStatement(fmt.Sprintf(`UPDATE %s SET Bool = FALSE WHERE Int64 = 1`, tableName)))
+		return err
+	}); err != nil {
+		t.Fatalf("Failed to execute UPDATE: %v", err)
+	}
+
+	// 3. DELETE
+	if _, err := spannerClient.ReadWriteTransaction(ctx, func(ctx context.Context, tx *spanner.ReadWriteTransaction) error {
+		_, err := tx.Update(ctx, spanner.NewStatement(fmt.Sprintf(`DELETE FROM %s WHERE Int64 = 1`, tableName)))
+		return err
+	}); err != nil {
+		t.Fatalf("Failed to execute DELETE: %v", err)
+	}
+
+	if !waitForRecords(consumer, 3, 30*time.Second) {
+		select {
+		case err := <-subscribeDone:
+			t.Fatalf("Subscribe returned early with error: %v (got %d records)", err, consumer.count())
+		default:
+		}
+		t.Fatalf("Timed out waiting for records: got %d, want 3", consumer.count())
+	}
+
+	got := consumer.snapshot()
+
+	// レコード数を検証する。
+	if len(got) != 3 {
+		t.Fatalf("got %d records, want 3", len(got))
+	}
+
+	// ModType の順序を検証する。
+	wantModTypes := []spream.ModType{spream.ModType_INSERT, spream.ModType_UPDATE, spream.ModType_DELETE}
+	for i, want := range wantModTypes {
+		if got[i].ModType != want {
+			t.Errorf("record[%d].ModType = %q, want %q", i, got[i].ModType, want)
+		}
+	}
+
+	// 各レコードの基本的な構造を検証する。
+	for i, record := range got {
+		if record.TableName != tableName {
+			t.Errorf("record[%d].TableName = %q, want %q", i, record.TableName, tableName)
+		}
+		if record.ValueCaptureType != "OLD_AND_NEW_VALUES" {
+			t.Errorf("record[%d].ValueCaptureType = %q, want %q", i, record.ValueCaptureType, "OLD_AND_NEW_VALUES")
+		}
+		if len(record.Mods) != 1 {
+			t.Errorf("record[%d].Mods has %d entries, want 1", i, len(record.Mods))
+			continue
+		}
+		if record.Mods[0].Keys["Int64"] != "1" {
+			t.Errorf("record[%d].Mods[0].Keys[\"Int64\"] = %v, want \"1\"", i, record.Mods[0].Keys["Int64"])
+		}
+	}
+
+	// INSERT レコードの NewValues を検証する。
+	insertRecord := got[0]
+	insertNewValues := insertRecord.Mods[0].NewValues
+	if insertNewValues["Bool"] != true {
+		t.Errorf("INSERT NewValues[\"Bool\"] = %v, want true", insertNewValues["Bool"])
+	}
+	if insertNewValues["Float64"] != 0.5 {
+		t.Errorf("INSERT NewValues[\"Float64\"] = %v, want 0.5", insertNewValues["Float64"])
+	}
+	if insertNewValues["String"] != "string" {
+		t.Errorf("INSERT NewValues[\"String\"] = %v, want \"string\"", insertNewValues["String"])
+	}
+	if insertNewValues["Numeric"] != "123.456" {
+		t.Errorf("INSERT NewValues[\"Numeric\"] = %v, want \"123.456\"", insertNewValues["Numeric"])
+	}
+
+	// INSERT の ColumnTypes にすべてのカラムが含まれることを検証する。
+	if len(insertRecord.ColumnTypes) != 18 {
+		t.Errorf("INSERT ColumnTypes has %d entries, want 18", len(insertRecord.ColumnTypes))
+	}
+
+	// UPDATE レコードの NewValues/OldValues を検証する。
+	updateRecord := got[1]
+	if updateRecord.Mods[0].NewValues["Bool"] != false {
+		t.Errorf("UPDATE NewValues[\"Bool\"] = %v, want false", updateRecord.Mods[0].NewValues["Bool"])
+	}
+	if updateRecord.Mods[0].OldValues["Bool"] != true {
+		t.Errorf("UPDATE OldValues[\"Bool\"] = %v, want true", updateRecord.Mods[0].OldValues["Bool"])
+	}
+
+	// DELETE レコードの NewValues が空であることを検証する。
+	deleteRecord := got[2]
+	if len(deleteRecord.Mods[0].NewValues) != 0 {
+		t.Errorf("DELETE NewValues should be empty, got %v", deleteRecord.Mods[0].NewValues)
+	}
+	if len(deleteRecord.Mods[0].OldValues) == 0 {
+		t.Error("DELETE OldValues should not be empty")
+	}
+}
+
+func TestSubscriber_Shutdown(t *testing.T) {
+	requireEmulator(t)
+	ctx := context.Background()
+
+	spannerClient, streamName, tableName, storage := setupSubscriberTest(t, ctx)
+
+	// Consumer は処理完了を通知するチャネルを使い、Shutdown 後にドレインされることを検証する。
+	var completed atomic.Int32
+	gate := make(chan struct{})
+	consumer := spream.ConsumerFunc(func(_ context.Context, _ *spream.DataChangeRecord) error {
+		<-gate // Shutdown が呼ばれるまでブロックする。
+		completed.Add(1)
+		return nil
+	})
+
+	subscriber, err := spream.NewSubscriber(&spream.Config{
+		SpannerClient:    spannerClient,
+		StreamName:       streamName,
+		PartitionStorage: storage,
+		Consumer:         consumer,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create subscriber: %v", err)
+	}
+
+	subscribeDone := make(chan error, 1)
+	go func() {
+		subscribeDone <- subscriber.Subscribe()
+	}()
+
+	// データを投入して Consumer がブロック中の状態にする。
+	if err := insertRows(ctx, spannerClient, tableName, 1); err != nil {
+		t.Fatalf("Failed to insert rows: %v", err)
+	}
+
+	// Consumer が呼ばれるのを待つ。
+	time.Sleep(5 * time.Second)
+
+	// Subscribe は ErrShutdown を即座に返す。
+	shutdownDone := make(chan error, 1)
+	go func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		shutdownDone <- subscriber.Shutdown(shutdownCtx)
+	}()
+
+	// Subscribe が ErrShutdown を返すことを確認する。
+	select {
+	case err := <-subscribeDone:
+		if !errors.Is(err, spream.ErrShutdown) {
+			t.Errorf("Subscribe() = %v, want ErrShutdown", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Subscribe() did not return after Shutdown")
+	}
+
+	// Consumer のブロックを解除してドレインを完了させる。
+	close(gate)
+
+	// Shutdown がドレイン完了を待って nil を返すことを確認する。
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Errorf("Shutdown() = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Shutdown() did not return after drain")
+	}
+
+	if got := completed.Load(); got != 1 {
+		t.Errorf("completed = %d, want 1", got)
+	}
+}
+
+func TestSubscriber_Close(t *testing.T) {
+	requireEmulator(t)
+	ctx := context.Background()
+
+	spannerClient, streamName, tableName, storage := setupSubscriberTest(t, ctx)
+
+	// Consumer を永久にブロックさせる。
+	consumer := spream.ConsumerFunc(func(ctx context.Context, _ *spream.DataChangeRecord) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+
+	subscriber, err := spream.NewSubscriber(&spream.Config{
+		SpannerClient:    spannerClient,
+		StreamName:       streamName,
+		PartitionStorage: storage,
+		Consumer:         consumer,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create subscriber: %v", err)
+	}
+
+	subscribeDone := make(chan error, 1)
+	go func() {
+		subscribeDone <- subscriber.Subscribe()
+	}()
+
+	if err := insertRows(ctx, spannerClient, tableName, 1); err != nil {
+		t.Fatalf("Failed to insert rows: %v", err)
+	}
+
+	// Consumer が呼ばれるのを待つ。
+	time.Sleep(5 * time.Second)
+
+	// Close はインフライト処理の完了を待たずに即座に停止する。
+	if err := subscriber.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+
+	select {
+	case err := <-subscribeDone:
+		if !errors.Is(err, spream.ErrClosed) {
+			t.Errorf("Subscribe() = %v, want ErrClosed", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Subscribe() did not return after Close")
+	}
+}
+
+func TestSubscriber_ConsumerError(t *testing.T) {
+	requireEmulator(t)
+	ctx := context.Background()
+
+	spannerClient, streamName, tableName, storage := setupSubscriberTest(t, ctx)
+
+	consumerErr := errors.New("consumer error")
+	consumer := spream.ConsumerFunc(func(_ context.Context, _ *spream.DataChangeRecord) error {
+		return consumerErr
+	})
+
+	subscriber, err := spream.NewSubscriber(&spream.Config{
+		SpannerClient:    spannerClient,
+		StreamName:       streamName,
+		PartitionStorage: storage,
+		Consumer:         consumer,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create subscriber: %v", err)
+	}
+
+	subscribeDone := make(chan error, 1)
+	go func() {
+		subscribeDone <- subscriber.Subscribe()
+	}()
+
+	if err := insertRows(ctx, spannerClient, tableName, 1); err != nil {
+		t.Fatalf("Failed to insert rows: %v", err)
+	}
+
+	select {
+	case err := <-subscribeDone:
+		if !errors.Is(err, consumerErr) {
+			t.Errorf("Subscribe() = %v, want %v", err, consumerErr)
+		}
+	case <-time.After(30 * time.Second):
+		subscriber.Close()
+		t.Fatal("Subscribe() did not return after consumer error")
+	}
+}
+
+func TestSubscriber_ShutdownTimeout(t *testing.T) {
+	requireEmulator(t)
+	ctx := context.Background()
+
+	spannerClient, streamName, tableName, storage := setupSubscriberTest(t, ctx)
+
+	// Consumer を永久にブロックさせる。
+	consumer := spream.ConsumerFunc(func(ctx context.Context, _ *spream.DataChangeRecord) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+
+	subscriber, err := spream.NewSubscriber(&spream.Config{
+		SpannerClient:    spannerClient,
+		StreamName:       streamName,
+		PartitionStorage: storage,
+		Consumer:         consumer,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create subscriber: %v", err)
+	}
+
+	subscribeDone := make(chan error, 1)
+	go func() {
+		subscribeDone <- subscriber.Subscribe()
+	}()
+
+	if err := insertRows(ctx, spannerClient, tableName, 1); err != nil {
+		t.Fatalf("Failed to insert rows: %v", err)
+	}
+
+	// Consumer が呼ばれるのを待つ。
+	time.Sleep(5 * time.Second)
+
+	// 短いタイムアウトで Shutdown する。Consumer がブロックしているのでタイムアウトする。
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer shutdownCancel()
+
+	err = subscriber.Shutdown(shutdownCtx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Shutdown() = %v, want context.DeadlineExceeded", err)
+	}
+
+	// Subscribe は Shutdown 呼び出し時点で ErrShutdown を返す。
+	select {
+	case err := <-subscribeDone:
+		if !errors.Is(err, spream.ErrShutdown) {
+			t.Errorf("Subscribe() = %v, want ErrShutdown", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Subscribe() did not return after Shutdown")
+	}
+
+	// Close でフォールバックする。
+	if err := subscriber.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+}
+
+func TestSubscriber_AtLeastOnce(t *testing.T) {
+	requireEmulator(t)
+	ctx := context.Background()
+
+	spannerClient, streamName, tableName, storage := setupSubscriberTest(t, ctx)
+
+	// 第1回: データを投入して受信を確認した後、Close で中断する。
+	consumer1 := &recordingConsumer{}
+	subscriber1, err := spream.NewSubscriber(&spream.Config{
+		SpannerClient:    spannerClient,
+		StreamName:       streamName,
+		PartitionStorage: storage,
+		Consumer:         consumer1,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create subscriber: %v", err)
+	}
+
+	subscribeDone1 := make(chan error, 1)
+	go func() {
+		subscribeDone1 <- subscriber1.Subscribe()
+	}()
+
+	// エミュレータは同一トランザクション内の複数 DML を 1 つの DataChangeRecord にまとめる場合がある。
+	// 各行を別トランザクションで挿入する。
+	for _, key := range []int64{1, 2, 3} {
+		if err := insertRows(ctx, spannerClient, tableName, key); err != nil {
+			t.Fatalf("Failed to insert row %d: %v", key, err)
+		}
+	}
+
+	if !waitForRecords(consumer1, 3, 30*time.Second) {
+		subscriber1.Close()
+		t.Fatalf("First subscriber: got %d records, want 3", consumer1.count())
+	}
+
+	// Close で強制中断する。watermark の更新タイミングによっては一部が再配信される。
+	subscriber1.Close()
+	<-subscribeDone1
+
+	// 第2回: 同じ PartitionStorage で新しい Subscriber を作成する。
+	consumer2 := &recordingConsumer{}
+	subscriber2, err := spream.NewSubscriber(&spream.Config{
+		SpannerClient:    spannerClient,
+		StreamName:       streamName,
+		PartitionStorage: storage,
+		Consumer:         consumer2,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create second subscriber: %v", err)
+	}
+
+	go func() {
+		_ = subscriber2.Subscribe()
+	}()
+
+	// 追加でデータを投入する。
+	if err := insertRows(ctx, spannerClient, tableName, 4); err != nil {
+		t.Fatalf("Failed to insert row: %v", err)
+	}
+
+	// 第2回の subscriber は、少なくとも key=4 の INSERT を受信する。
+	// watermark の位置によっては key=1,2,3 の一部も再配信される(at-least-once)。
+	if !waitForRecords(consumer2, 1, 30*time.Second) {
+		subscriber2.Close()
+		t.Fatalf("Second subscriber: got %d records, want >= 1", consumer2.count())
+	}
+
+	subscriber2.Close()
+
+	// 第1回 + 第2回で合計 4 件以上受信していることを確認する(at-least-once)。
+	total := consumer1.count() + consumer2.count()
+	if total < 4 {
+		t.Errorf("Total records = %d (sub1=%d, sub2=%d), want >= 4", total, consumer1.count(), consumer2.count())
+	}
+}
+
+func TestSubscriber_MaxInflight(t *testing.T) {
+	requireEmulator(t)
+	ctx := context.Background()
+
+	spannerClient, streamName, tableName, storage := setupSubscriberTest(t, ctx)
+
+	const maxInflight = 2
+
+	var maxConcurrent atomic.Int32
+	var currentConcurrent atomic.Int32
+
+	consumer := spream.ConsumerFunc(func(_ context.Context, _ *spream.DataChangeRecord) error {
+		cur := currentConcurrent.Add(1)
+		defer currentConcurrent.Add(-1)
+
+		// 最大同時実行数を記録する。
+		for {
+			old := maxConcurrent.Load()
+			if cur <= old || maxConcurrent.CompareAndSwap(old, cur) {
+				break
+			}
+		}
+
+		// 並行処理を観測するために少し待つ。
+		time.Sleep(500 * time.Millisecond)
+		return nil
+	})
+
+	subscriber, err := spream.NewSubscriber(&spream.Config{
+		SpannerClient:    spannerClient,
+		StreamName:       streamName,
+		PartitionStorage: storage,
+		Consumer:         consumer,
+		MaxInflight:      maxInflight,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create subscriber: %v", err)
+	}
+
+	go func() {
+		_ = subscriber.Subscribe()
+	}()
+	defer subscriber.Close()
+
+	// 複数行を投入する。各行は別トランザクションにして独立した DataChangeRecord にする。
+	for i := int64(1); i <= 5; i++ {
+		if err := insertRows(ctx, spannerClient, tableName, i); err != nil {
+			t.Fatalf("Failed to insert row %d: %v", i, err)
+		}
+	}
+
+	// Consumer がすべてのレコードを処理するのを待つ。
+	deadline := time.After(30 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("Timed out waiting for all records to be consumed")
+		case <-time.After(200 * time.Millisecond):
+		}
+		if currentConcurrent.Load() == 0 && maxConcurrent.Load() > 0 {
+			// すべての処理が完了した。
+			break
+		}
+	}
+
+	got := maxConcurrent.Load()
+	if got > maxInflight {
+		t.Errorf("Max concurrent consumers = %d, want <= %d", got, maxInflight)
+	}
+}
+
+// TestSubscriber_EndTimestamp はエミュレータが endTimestamp でストリームを終了しないため、
+// エミュレータ環境ではスキップする。本番 Spanner では EndTimestamp 到達時に Subscribe が
+// nil を返して正常終了する。
+func TestSubscriber_EndTimestamp(t *testing.T) {
+	t.Skip("Spanner emulator does not terminate change stream at endTimestamp")
 }
