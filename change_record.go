@@ -35,7 +35,7 @@ type ColumnType struct {
 type Type struct {
 	Code             TypeCode `json:"code"`
 	ArrayElementType *Type    `json:"array_element_type,omitempty"`
-	ProtoTypeFqn     string   `json:"proto_type_fqn,omitempty"`
+	ProtoTypeFQN     string   `json:"proto_type_fqn,omitempty"`
 }
 
 // TypeCode represents the Spanner column type code.
@@ -176,13 +176,13 @@ func decodeColumnTypeJSONToType(columnType spanner.NullJSON) Type {
 	t := Type{Code: code}
 
 	if fqn, ok := m["proto_type_fqn"].(string); ok {
-		t.ProtoTypeFqn = fqn
+		t.ProtoTypeFQN = fqn
 	}
 
 	if aet, ok := m["array_element_type"].(map[string]any); ok {
 		elem := Type{Code: TypeCode(aet["code"].(string))}
 		if fqn, ok := aet["proto_type_fqn"].(string); ok {
-			elem.ProtoTypeFqn = fqn
+			elem.ProtoTypeFQN = fqn
 		}
 		t.ArrayElementType = &elem
 	}

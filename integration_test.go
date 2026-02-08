@@ -1318,11 +1318,11 @@ func TestSubscriber_DataChangeRecord_ExtendedTypes(t *testing.T) {
 			IsLastRecordInTransactionInPartition: true,
 			ColumnTypes: []*spream.ColumnType{
 				{Name: "Key", Type: spream.Type{Code: spream.TypeCode_INT64}, IsPrimaryKey: true, OrdinalPosition: 1},
-				{Name: "ProtoCol", Type: spream.Type{Code: spream.TypeCode_PROTO, ProtoTypeFqn: msgFqn}, OrdinalPosition: 2},
-				{Name: "EnumCol", Type: spream.Type{Code: spream.TypeCode_ENUM, ProtoTypeFqn: enumFqn}, OrdinalPosition: 3},
+				{Name: "ProtoCol", Type: spream.Type{Code: spream.TypeCode_PROTO, ProtoTypeFQN: msgFqn}, OrdinalPosition: 2},
+				{Name: "EnumCol", Type: spream.Type{Code: spream.TypeCode_ENUM, ProtoTypeFQN: enumFqn}, OrdinalPosition: 3},
 				{Name: "UuidCol", Type: spream.Type{Code: spream.TypeCode_UUID}, OrdinalPosition: 4},
-				{Name: "ProtoArrayCol", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_PROTO, ProtoTypeFqn: msgFqn}}, OrdinalPosition: 5},
-				{Name: "EnumArrayCol", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_ENUM, ProtoTypeFqn: enumFqn}}, OrdinalPosition: 6},
+				{Name: "ProtoArrayCol", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_PROTO, ProtoTypeFQN: msgFqn}}, OrdinalPosition: 5},
+				{Name: "EnumArrayCol", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_ENUM, ProtoTypeFQN: enumFqn}}, OrdinalPosition: 6},
 				{Name: "UuidArrayCol", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_UUID}}, OrdinalPosition: 7},
 			},
 			Mods: []*spream.Mod{{

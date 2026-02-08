@@ -190,9 +190,9 @@ If you're using the CLI, pass `--create-table` flag to automatically create the 
 $ spream -d ... -s ... -t PartitionMetadata --create-table
 ```
 
-### ColumnType.Type.ArrayElementType の型変更
+### ColumnType.Type.ArrayElementType Type Change
 
-`Type.ArrayElementType` の型が `TypeCode` から `*Type` に変更されました。ARRAY<PROTO> や ARRAY<ENUM> の要素型に `ProtoTypeFqn` を保持するための変更です。
+The type of `Type.ArrayElementType` has changed from `TypeCode` to `*Type`. This change allows ARRAY<PROTO> and ARRAY<ENUM> element types to carry `ProtoTypeFQN`.
 
 **Before (v0.2.x):**
 ```go
@@ -204,13 +204,13 @@ ct.Type.ArrayElementType == spream.TypeCode_STRING
 ct.Type.ArrayElementType.Code == spream.TypeCode_STRING
 ```
 
-`Type` 構造体に `ProtoTypeFqn` フィールドが追加されました。PROTO/ENUM 型のカラムで完全修飾名を取得できます:
+A `ProtoTypeFQN` field has been added to the `Type` struct. You can retrieve the fully qualified name for PROTO/ENUM columns:
 ```go
-// スカラーの PROTO/ENUM
-ct.Type.ProtoTypeFqn // e.g. "my.package.MyMessage"
+// Scalar PROTO/ENUM
+ct.Type.ProtoTypeFQN // e.g. "my.package.MyMessage"
 
-// ARRAY<PROTO>/ARRAY<ENUM> の要素型
-ct.Type.ArrayElementType.ProtoTypeFqn // e.g. "my.package.MyMessage"
+// ARRAY<PROTO>/ARRAY<ENUM> element type
+ct.Type.ArrayElementType.ProtoTypeFQN // e.g. "my.package.MyMessage"
 ```
 
 ### SpannerPartitionStorage Options

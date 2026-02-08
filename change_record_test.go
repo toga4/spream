@@ -59,12 +59,12 @@ func TestDecodeColumnTypeJSONToType(t *testing.T) {
 		{
 			name:  "PROTO with proto_type_fqn",
 			input: map[string]any{"code": "PROTO", "proto_type_fqn": "com.example.MyMessage"},
-			want:  Type{Code: TypeCode_PROTO, ProtoTypeFqn: "com.example.MyMessage"},
+			want:  Type{Code: TypeCode_PROTO, ProtoTypeFQN: "com.example.MyMessage"},
 		},
 		{
 			name:  "ENUM with proto_type_fqn",
 			input: map[string]any{"code": "ENUM", "proto_type_fqn": "com.example.MyEnum"},
-			want:  Type{Code: TypeCode_ENUM, ProtoTypeFqn: "com.example.MyEnum"},
+			want:  Type{Code: TypeCode_ENUM, ProtoTypeFQN: "com.example.MyEnum"},
 		},
 		{
 			name: "ARRAY of PROTO with proto_type_fqn",
@@ -75,7 +75,7 @@ func TestDecodeColumnTypeJSONToType(t *testing.T) {
 					"proto_type_fqn": "com.example.MyMessage",
 				},
 			},
-			want: Type{Code: TypeCode_ARRAY, ArrayElementType: &Type{Code: TypeCode_PROTO, ProtoTypeFqn: "com.example.MyMessage"}},
+			want: Type{Code: TypeCode_ARRAY, ArrayElementType: &Type{Code: TypeCode_PROTO, ProtoTypeFQN: "com.example.MyMessage"}},
 		},
 	}
 
