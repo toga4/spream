@@ -31,19 +31,41 @@ func TestDecodeNullJSONToMap(t *testing.T) {
 }
 
 func TestDecodeColumnTypeJSONToType(t *testing.T) {
-	t.Run("simple type", func(t *testing.T) {
-		j := spanner.NullJSON{
-			Value: map[string]any{"code": "STRING"},
-			Valid: true,
-		}
-		got := decodeColumnTypeJSONToType(j)
-		if got.Code != TypeCode_STRING {
-			t.Errorf("Code = %v, want %v", got.Code, TypeCode_STRING)
-		}
-		if got.ArrayElementType != TypeCode_NONE {
-			t.Errorf("ArrayElementType = %v, want %v", got.ArrayElementType, TypeCode_NONE)
-		}
-	})
+	simpleTests := []struct {
+		name string
+		code TypeCode
+	}{
+		{"STRING", TypeCode_STRING},
+		{"BOOL", TypeCode_BOOL},
+		{"INT64", TypeCode_INT64},
+		{"FLOAT64", TypeCode_FLOAT64},
+		{"FLOAT32", TypeCode_FLOAT32},
+		{"TIMESTAMP", TypeCode_TIMESTAMP},
+		{"DATE", TypeCode_DATE},
+		{"BYTES", TypeCode_BYTES},
+		{"NUMERIC", TypeCode_NUMERIC},
+		{"JSON", TypeCode_JSON},
+		{"PROTO", TypeCode_PROTO},
+		{"ENUM", TypeCode_ENUM},
+		{"UUID", TypeCode_UUID},
+		{"INTERVAL", TypeCode_INTERVAL},
+	}
+
+	for _, tt := range simpleTests {
+		t.Run(tt.name, func(t *testing.T) {
+			j := spanner.NullJSON{
+				Value: map[string]any{"code": string(tt.code)},
+				Valid: true,
+			}
+			got := decodeColumnTypeJSONToType(j)
+			if got.Code != tt.code {
+				t.Errorf("Code = %v, want %v", got.Code, tt.code)
+			}
+			if got.ArrayElementType != TypeCode_NONE {
+				t.Errorf("ArrayElementType = %v, want %v", got.ArrayElementType, TypeCode_NONE)
+			}
+		})
+	}
 
 	t.Run("array type", func(t *testing.T) {
 		j := spanner.NullJSON{

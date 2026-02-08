@@ -14,9 +14,12 @@ import (
 	"cloud.google.com/go/spanner/admin/database/apiv1/databasepb"
 	instance "cloud.google.com/go/spanner/admin/instance/apiv1"
 	"cloud.google.com/go/spanner/admin/instance/apiv1/instancepb"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
+	tcspanner "github.com/testcontainers/testcontainers-go/modules/gcloud/spanner"
 	"github.com/toga4/spream"
+	"google.golang.org/api/option"
+	"google.golang.org/api/option/internaloption"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 const (
@@ -30,7 +33,10 @@ const (
 
 // spannerEmulatorAvailable indicates whether the Spanner emulator is running.
 // Spanner tests call requireEmulator to skip when the emulator is not available.
-var spannerEmulatorAvailable bool
+var (
+	spannerEmulatorAvailable bool
+	spannerClientOptions     []option.ClientOption
+)
 
 func TestMain(m *testing.M) {
 	cleanup, err := tryLaunchEmulatorOnDocker()
@@ -76,34 +82,17 @@ func tryLaunchEmulatorOnDocker() (cleanup func(), err error) {
 func launchEmulatorOnDocker() func() {
 	ctx := context.Background()
 
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "gcr.io/cloud-spanner-emulator/emulator:latest",
-			ExposedPorts: []string{"9010/tcp"},
-			WaitingFor:   wait.ForListeningPort("9010/tcp"),
-		},
-		Started: true,
-	})
+	container, err := tcspanner.Run(ctx, "gcr.io/cloud-spanner-emulator/emulator:latest")
 	if err != nil {
 		log.Fatalf("Could not launch emulator on docker: %v", err)
 	}
-	terminateFunc := func() {
-		if err := container.Terminate(ctx); err != nil {
-			log.Fatalf("Could not terminate emulator on docker: %v", err)
-		}
-	}
 
-	host, err := container.Host(ctx)
-	if err != nil {
-		log.Fatalf("Could not get host: %v", err)
+	spannerClientOptions = []option.ClientOption{
+		option.WithEndpoint(container.URI()),
+		option.WithoutAuthentication(),
+		option.WithGRPCDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())),
+		internaloption.SkipDialSettingsValidation(),
 	}
-
-	port, err := container.MappedPort(ctx, "9010/tcp")
-	if err != nil {
-		log.Fatalf("Could not get port: %v", err)
-	}
-
-	os.Setenv("SPANNER_EMULATOR_HOST", fmt.Sprintf("%s:%s", host, port.Port()))
 
 	if err := createInstance(ctx); err != nil {
 		log.Fatalf("Could not create instance: %v", err)
@@ -112,11 +101,15 @@ func launchEmulatorOnDocker() func() {
 		log.Fatalf("Could not create database: %v", err)
 	}
 
-	return terminateFunc
+	return func() {
+		if err := container.Terminate(ctx); err != nil {
+			log.Fatalf("Could not terminate emulator on docker: %v", err)
+		}
+	}
 }
 
 func createInstance(ctx context.Context) error {
-	instanceAdminClient, err := instance.NewInstanceAdminClient(ctx)
+	instanceAdminClient, err := instance.NewInstanceAdminClient(ctx, spannerClientOptions...)
 	if err != nil {
 		return err
 	}
@@ -140,7 +133,7 @@ func createInstance(ctx context.Context) error {
 }
 
 func createDatabase(ctx context.Context) error {
-	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx)
+	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx, spannerClientOptions...)
 	if err != nil {
 		return err
 	}
@@ -159,7 +152,7 @@ func createDatabase(ctx context.Context) error {
 }
 
 func createTable(ctx context.Context, databaseName, tableName string) error {
-	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx)
+	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx, spannerClientOptions...)
 	if err != nil {
 		return err
 	}
@@ -193,7 +186,7 @@ func createTable(ctx context.Context, databaseName, tableName string) error {
 func setupSpannerPartitionStorage(t *testing.T, ctx context.Context) *SpannerPartitionStorage {
 	t.Helper()
 
-	client, err := spanner.NewClient(ctx, testDatabasePath)
+	client, err := spanner.NewClient(ctx, testDatabasePath, spannerClientOptions...)
 	if err != nil {
 		t.Error(err)
 		return nil

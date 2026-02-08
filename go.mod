@@ -6,8 +6,7 @@ toolchain go1.24.1
 
 require (
 	cloud.google.com/go/spanner v1.87.0
-	github.com/google/go-cmp v0.7.0
-	github.com/testcontainers/testcontainers-go v0.40.0
+	github.com/testcontainers/testcontainers-go/modules/gcloud v0.40.0
 	golang.org/x/sync v0.19.0
 	google.golang.org/api v0.257.0
 	google.golang.org/grpc v1.77.0
@@ -75,6 +74,7 @@ require (
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.6.0 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
+	github.com/testcontainers/testcontainers-go v0.40.0 // indirect
 	github.com/tklauser/go-sysconf v0.3.15 // indirect
 	github.com/tklauser/numcpus v0.10.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
