@@ -6,7 +6,7 @@ import (
 	"log"
 	"math/rand/v2"
 	"os"
-	"reflect"
+	"github.com/google/go-cmp/cmp"
 	"strconv"
 	"testing"
 	"time"
@@ -394,8 +394,8 @@ func TestSpannerPartitionStorage_InitializeRootPartition(t *testing.T) {
 			t.Errorf("InitializeRootPartition(%q, %q, %q): %v", test.startTimestamp, test.endTimestamp, test.heartbeatInterval, err)
 			continue
 		}
-		if !reflect.DeepEqual(got, test.want) {
-			t.Errorf("InitializeRootPartition(%q, %q, %q): got = %+v, want %+v", test.startTimestamp, test.endTimestamp, test.heartbeatInterval, got, test.want)
+		if diff := cmp.Diff(test.want, got); diff != "" {
+			t.Errorf("InitializeRootPartition(%q, %q, %q) mismatch (-want +got):\n%s", test.startTimestamp, test.endTimestamp, test.heartbeatInterval, diff)
 		}
 	}
 }
@@ -458,8 +458,8 @@ func TestSpannerPartitionStorage_Read(t *testing.T) {
 		}
 
 		want := []string{"scheduled", "running"}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("GetInterruptedPartitions(ctx) = %+v, want = %+v", got, want)
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("GetInterruptedPartitions(ctx) mismatch (-want +got):\n%s", diff)
 		}
 	})
 
@@ -476,8 +476,8 @@ func TestSpannerPartitionStorage_Read(t *testing.T) {
 		}
 
 		want := []string{"created1"}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("GetSchedulablePartitions(ctx, %q) = %+v, want = %+v", timestamp, got, want)
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("GetSchedulablePartitions(ctx, %q) mismatch (-want +got):\n%s", timestamp, diff)
 		}
 	})
 }
@@ -547,8 +547,8 @@ func TestSpannerPartitionStorage_AddChildPartitions(t *testing.T) {
 			Watermark:       childStartTimestamp,
 		},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("GetSchedulablePartitions(ctx, %+v, %+v): got = %+v, want %+v", parent, record, got, want)
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("AddChildPartitions(ctx) mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -623,8 +623,8 @@ func TestSpannerPartitionStorage_Update(t *testing.T) {
 			{PartitionToken: "token1", State: spream.StateScheduled},
 			{PartitionToken: "token2", State: spream.StateScheduled},
 		}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("UpdateToScheduled(ctx, %+v): got = %+v, want %+v", partitions, got, want)
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("UpdateToScheduled(ctx) mismatch (-want +got):\n%s", diff)
 		}
 	})
 
@@ -654,8 +654,8 @@ func TestSpannerPartitionStorage_Update(t *testing.T) {
 		}
 
 		want := partition{PartitionToken: "token1", State: spream.StateRunning}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("UpdateToRunning(ctx, %+v): got = %+v, want %+v", partitions[0], got, want)
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("UpdateToRunning(ctx) mismatch (-want +got):\n%s", diff)
 		}
 	})
 
@@ -685,8 +685,8 @@ func TestSpannerPartitionStorage_Update(t *testing.T) {
 		}
 
 		want := partition{PartitionToken: "token1", State: spream.StateFinished}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("UpdateToFinished(ctx, %+v): got = %+v, want %+v", partitions[0], got, want)
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("UpdateToFinished(ctx) mismatch (-want +got):\n%s", diff)
 		}
 	})
 
@@ -718,8 +718,8 @@ func TestSpannerPartitionStorage_Update(t *testing.T) {
 		}
 
 		want := partition{PartitionToken: "token1", Watermark: timestamp}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("UpdateWatermark(ctx, %+v, %q): got = %+v, want %+v", partitions[0], timestamp, got, want)
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("UpdateWatermark(ctx) mismatch (-want +got):\n%s", diff)
 		}
 	})
 
