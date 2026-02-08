@@ -34,7 +34,8 @@ type ColumnType struct {
 // Type is the type of the column.
 type Type struct {
 	Code             TypeCode `json:"code"`
-	ArrayElementType TypeCode `json:"array_element_type,omitempty"`
+	ArrayElementType *Type    `json:"array_element_type,omitempty"`
+	ProtoTypeFqn     string   `json:"proto_type_fqn,omitempty"`
 }
 
 // TypeCode represents the Spanner column type code.
@@ -56,8 +57,7 @@ const (
 	TypeCode_FLOAT32   TypeCode = "FLOAT32"
 	TypeCode_PROTO     TypeCode = "PROTO"
 	TypeCode_ENUM      TypeCode = "ENUM"
-	TypeCode_UUID      TypeCode = "UUID"
-	TypeCode_INTERVAL  TypeCode = "INTERVAL"
+	TypeCode_UUID TypeCode = "UUID"
 )
 
 // Mod contains the keys and the values of the changed records.
@@ -173,15 +173,21 @@ func decodeColumnTypeJSONToType(columnType spanner.NullJSON) Type {
 	m := columnType.Value.(map[string]any)
 	code := TypeCode(m["code"].(string))
 
-	if aet, ok := m["array_element_type"].(map[string]any); ok {
-		arrayElementType := TypeCode(aet["code"].(string))
-		return Type{
-			Code:             code,
-			ArrayElementType: arrayElementType,
-		}
+	t := Type{Code: code}
+
+	if fqn, ok := m["proto_type_fqn"].(string); ok {
+		t.ProtoTypeFqn = fqn
 	}
 
-	return Type{Code: code}
+	if aet, ok := m["array_element_type"].(map[string]any); ok {
+		elem := Type{Code: TypeCode(aet["code"].(string))}
+		if fqn, ok := aet["proto_type_fqn"].(string); ok {
+			elem.ProtoTypeFqn = fqn
+		}
+		t.ArrayElementType = &elem
+	}
+
+	return t
 }
 
 func decodeNullJSONToMap(j spanner.NullJSON) map[string]any {

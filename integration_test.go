@@ -29,6 +29,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -1020,9 +1022,272 @@ func TestSubscriber_MaxInflight(t *testing.T) {
 	}
 }
 
+// TestSubscriber_DataChangeRecord_ExtendedTypes は PROTO, ENUM, UUID 型の
+// change stream レコードを検証する。エミュレータは PROTO/ENUM 型を未サポートのため、
+// 実 Spanner でのみ実行する。
+func TestSubscriber_DataChangeRecord_ExtendedTypes(t *testing.T) {
+	requireRealSpanner(t)
+	t.Parallel()
+	ctx := context.Background()
+
+	tableName := generateUniqueName("table")
+	streamName := generateUniqueName("stream")
+	partitionTableName := generateUniqueName("partition")
+
+	// descriptorpb でプログラマティックに proto descriptor を構築する。
+	const (
+		protoPackage = "spream.test"
+		msgName      = "TestMessage"
+		enumName     = "TestEnum"
+	)
+
+	fds := &descriptorpb.FileDescriptorSet{
+		File: []*descriptorpb.FileDescriptorProto{
+			{
+				Name:    ptr("spream/test/test.proto"),
+				Package: ptr(protoPackage),
+				Syntax:  ptr("proto3"),
+				MessageType: []*descriptorpb.DescriptorProto{
+					{
+						Name: ptr(msgName),
+						Field: []*descriptorpb.FieldDescriptorProto{
+							{
+								Name:   ptr("value"),
+								Number: ptr(int32(1)),
+								Type:   descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+								Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+							},
+						},
+					},
+				},
+				EnumType: []*descriptorpb.EnumDescriptorProto{
+					{
+						Name: ptr(enumName),
+						Value: []*descriptorpb.EnumValueDescriptorProto{
+							{Name: ptr("TEST_ENUM_UNSPECIFIED"), Number: ptr(int32(0))},
+							{Name: ptr("TEST_ENUM_ONE"), Number: ptr(int32(1))},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	protoBytes, err := proto.Marshal(fds)
+	if err != nil {
+		t.Fatalf("Failed to marshal FileDescriptorSet: %v", err)
+	}
+
+	msgFqn := protoPackage + "." + msgName
+	enumFqn := protoPackage + "." + enumName
+
+	ddl := []string{
+		fmt.Sprintf("CREATE PROTO BUNDLE (%s, %s)", msgFqn, enumFqn),
+		fmt.Sprintf(`CREATE TABLE %s (
+			Key           INT64 NOT NULL,
+			ProtoCol      %s,
+			EnumCol       %s,
+			UuidCol       UUID,
+			ProtoArrayCol ARRAY<%s>,
+			EnumArrayCol  ARRAY<%s>,
+			UuidArrayCol  ARRAY<UUID>,
+		) PRIMARY KEY (Key)`, tableName, msgFqn, enumFqn, msgFqn, enumFqn),
+		fmt.Sprintf("CREATE CHANGE STREAM %s FOR %s", streamName, tableName),
+		partitionMetadataTableDDL(partitionTableName),
+	}
+
+	// createTestDatabase は ProtoDescriptors を渡せないため、テスト内で直接データベースを作成する。
+	dbID := generateUniqueName("db")
+
+	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx, spannerClientOptions...)
+	if err != nil {
+		t.Fatalf("Failed to create database admin client: %v", err)
+	}
+
+	op, err := databaseAdminClient.CreateDatabase(ctx, &databasepb.CreateDatabaseRequest{
+		Parent:           testInstancePath,
+		CreateStatement:  fmt.Sprintf("CREATE DATABASE `%s`", dbID),
+		ExtraStatements:  ddl,
+		ProtoDescriptors: protoBytes,
+	})
+	if err != nil {
+		databaseAdminClient.Close()
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	if _, err := op.Wait(ctx); err != nil {
+		databaseAdminClient.Close()
+		t.Fatalf("Failed to wait for database creation: %v", err)
+	}
+
+	dbPath := testInstancePath + "/databases/" + dbID
+	t.Cleanup(func() {
+		if err := databaseAdminClient.DropDatabase(ctx, &databasepb.DropDatabaseRequest{
+			Database: dbPath,
+		}); err != nil {
+			t.Logf("Failed to drop database %s: %v", dbPath, err)
+		}
+		databaseAdminClient.Close()
+	})
+
+	spannerClient, err := spanner.NewClient(ctx, dbPath, spannerClientOptions...)
+	if err != nil {
+		t.Fatalf("Failed to create spanner client: %v", err)
+	}
+	t.Cleanup(func() { spannerClient.Close() })
+
+	storage := partitionstorage.NewSpanner(spannerClient, partitionTableName)
+	consumer := &recordingConsumer{}
+
+	subscriber, err := spream.NewSubscriber(&spream.Config{
+		SpannerClient:    spannerClient,
+		StreamName:       streamName,
+		PartitionStorage: storage,
+		Consumer:         consumer,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create subscriber: %v", err)
+	}
+
+	subscribeDone := make(chan error, 1)
+	go func() {
+		subscribeDone <- subscriber.Subscribe()
+	}()
+	defer subscriber.Close()
+
+	// INSERT を実行する。
+	insertSQL := fmt.Sprintf(`INSERT INTO %s (Key, ProtoCol, EnumCol, UuidCol) VALUES (@key, @proto, @enum, @uuid)`, tableName)
+	params := map[string]any{
+		"key":   int64(1),
+		"proto": []byte{}, // 空の proto メッセージ
+		"enum":  int64(0), // TEST_ENUM_UNSPECIFIED
+		"uuid":  "550e8400-e29b-41d4-a716-446655440000",
+	}
+
+	if _, err := spannerClient.ReadWriteTransaction(ctx, func(ctx context.Context, tx *spanner.ReadWriteTransaction) error {
+		_, err := tx.Update(ctx, spanner.Statement{SQL: insertSQL, Params: params})
+		return err
+	}); err != nil {
+		t.Fatalf("Failed to execute INSERT: %v", err)
+	}
+
+	if !waitForRecords(consumer, 1, 30*time.Second) {
+		select {
+		case err := <-subscribeDone:
+			t.Fatalf("Subscribe returned early with error: %v (got %d records)", err, consumer.count())
+		default:
+		}
+		t.Fatalf("Timed out waiting for records: got %d, want 1", consumer.count())
+	}
+
+	got := consumer.snapshot()
+	if len(got) < 1 {
+		t.Fatalf("got %d records, want >= 1", len(got))
+	}
+
+	record := got[0]
+
+	// ColumnType のマップを作成する。
+	colTypeMap := make(map[string]*spream.ColumnType)
+	for _, ct := range record.ColumnTypes {
+		colTypeMap[ct.Name] = ct
+	}
+
+	// Key: INT64
+	if ct, ok := colTypeMap["Key"]; !ok {
+		t.Error("ColumnType for Key not found")
+	} else if ct.Type.Code != spream.TypeCode_INT64 {
+		t.Errorf("Key.Type.Code = %v, want %v", ct.Type.Code, spream.TypeCode_INT64)
+	}
+
+	// ProtoCol: PROTO with FQN
+	if ct, ok := colTypeMap["ProtoCol"]; !ok {
+		t.Error("ColumnType for ProtoCol not found")
+	} else {
+		if ct.Type.Code != spream.TypeCode_PROTO {
+			t.Errorf("ProtoCol.Type.Code = %v, want %v", ct.Type.Code, spream.TypeCode_PROTO)
+		}
+		if ct.Type.ProtoTypeFqn != msgFqn {
+			t.Errorf("ProtoCol.Type.ProtoTypeFqn = %v, want %v", ct.Type.ProtoTypeFqn, msgFqn)
+		}
+	}
+
+	// EnumCol: ENUM with FQN
+	if ct, ok := colTypeMap["EnumCol"]; !ok {
+		t.Error("ColumnType for EnumCol not found")
+	} else {
+		if ct.Type.Code != spream.TypeCode_ENUM {
+			t.Errorf("EnumCol.Type.Code = %v, want %v", ct.Type.Code, spream.TypeCode_ENUM)
+		}
+		if ct.Type.ProtoTypeFqn != enumFqn {
+			t.Errorf("EnumCol.Type.ProtoTypeFqn = %v, want %v", ct.Type.ProtoTypeFqn, enumFqn)
+		}
+	}
+
+	// UuidCol: UUID
+	if ct, ok := colTypeMap["UuidCol"]; !ok {
+		t.Error("ColumnType for UuidCol not found")
+	} else if ct.Type.Code != spream.TypeCode_UUID {
+		t.Errorf("UuidCol.Type.Code = %v, want %v", ct.Type.Code, spream.TypeCode_UUID)
+	}
+
+	// ProtoArrayCol: ARRAY<PROTO>
+	if ct, ok := colTypeMap["ProtoArrayCol"]; !ok {
+		t.Error("ColumnType for ProtoArrayCol not found")
+	} else {
+		if ct.Type.Code != spream.TypeCode_ARRAY {
+			t.Errorf("ProtoArrayCol.Type.Code = %v, want %v", ct.Type.Code, spream.TypeCode_ARRAY)
+		}
+		if ct.Type.ArrayElementType == nil {
+			t.Fatal("ProtoArrayCol.Type.ArrayElementType is nil, want non-nil")
+		}
+		if ct.Type.ArrayElementType.Code != spream.TypeCode_PROTO {
+			t.Errorf("ProtoArrayCol.Type.ArrayElementType.Code = %v, want %v", ct.Type.ArrayElementType.Code, spream.TypeCode_PROTO)
+		}
+		if ct.Type.ArrayElementType.ProtoTypeFqn != msgFqn {
+			t.Errorf("ProtoArrayCol.Type.ArrayElementType.ProtoTypeFqn = %v, want %v", ct.Type.ArrayElementType.ProtoTypeFqn, msgFqn)
+		}
+	}
+
+	// EnumArrayCol: ARRAY<ENUM>
+	if ct, ok := colTypeMap["EnumArrayCol"]; !ok {
+		t.Error("ColumnType for EnumArrayCol not found")
+	} else {
+		if ct.Type.Code != spream.TypeCode_ARRAY {
+			t.Errorf("EnumArrayCol.Type.Code = %v, want %v", ct.Type.Code, spream.TypeCode_ARRAY)
+		}
+		if ct.Type.ArrayElementType == nil {
+			t.Fatal("EnumArrayCol.Type.ArrayElementType is nil, want non-nil")
+		}
+		if ct.Type.ArrayElementType.Code != spream.TypeCode_ENUM {
+			t.Errorf("EnumArrayCol.Type.ArrayElementType.Code = %v, want %v", ct.Type.ArrayElementType.Code, spream.TypeCode_ENUM)
+		}
+		if ct.Type.ArrayElementType.ProtoTypeFqn != enumFqn {
+			t.Errorf("EnumArrayCol.Type.ArrayElementType.ProtoTypeFqn = %v, want %v", ct.Type.ArrayElementType.ProtoTypeFqn, enumFqn)
+		}
+	}
+
+	// UuidArrayCol: ARRAY<UUID>
+	if ct, ok := colTypeMap["UuidArrayCol"]; !ok {
+		t.Error("ColumnType for UuidArrayCol not found")
+	} else {
+		if ct.Type.Code != spream.TypeCode_ARRAY {
+			t.Errorf("UuidArrayCol.Type.Code = %v, want %v", ct.Type.Code, spream.TypeCode_ARRAY)
+		}
+		if ct.Type.ArrayElementType == nil {
+			t.Fatal("UuidArrayCol.Type.ArrayElementType is nil, want non-nil")
+		}
+		if ct.Type.ArrayElementType.Code != spream.TypeCode_UUID {
+			t.Errorf("UuidArrayCol.Type.ArrayElementType.Code = %v, want %v", ct.Type.ArrayElementType.Code, spream.TypeCode_UUID)
+		}
+	}
+
+}
+
 // TestSubscriber_EndTimestamp はエミュレータが endTimestamp でストリームを終了しないため、
 // エミュレータ環境ではスキップする。実 Spanner では EndTimestamp 到達時に Subscribe が
 // nil を返して正常終了することを検証する。
+func ptr[T any](v T) *T { return &v }
+
 func TestSubscriber_EndTimestamp(t *testing.T) {
 	requireRealSpanner(t)
 }

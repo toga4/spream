@@ -48,7 +48,6 @@ func TestDecodeColumnTypeJSONToType(t *testing.T) {
 		{"PROTO", TypeCode_PROTO},
 		{"ENUM", TypeCode_ENUM},
 		{"UUID", TypeCode_UUID},
-		{"INTERVAL", TypeCode_INTERVAL},
 	}
 
 	for _, tt := range simpleTests {
@@ -61,8 +60,8 @@ func TestDecodeColumnTypeJSONToType(t *testing.T) {
 			if got.Code != tt.code {
 				t.Errorf("Code = %v, want %v", got.Code, tt.code)
 			}
-			if got.ArrayElementType != TypeCode_NONE {
-				t.Errorf("ArrayElementType = %v, want %v", got.ArrayElementType, TypeCode_NONE)
+			if got.ArrayElementType != nil {
+				t.Errorf("ArrayElementType = %v, want nil", got.ArrayElementType)
 			}
 		})
 	}
@@ -79,8 +78,71 @@ func TestDecodeColumnTypeJSONToType(t *testing.T) {
 		if got.Code != TypeCode_ARRAY {
 			t.Errorf("Code = %v, want %v", got.Code, TypeCode_ARRAY)
 		}
-		if got.ArrayElementType != TypeCode_INT64 {
-			t.Errorf("ArrayElementType = %v, want %v", got.ArrayElementType, TypeCode_INT64)
+		if got.ArrayElementType == nil {
+			t.Fatal("ArrayElementType is nil, want non-nil")
+		}
+		if got.ArrayElementType.Code != TypeCode_INT64 {
+			t.Errorf("ArrayElementType.Code = %v, want %v", got.ArrayElementType.Code, TypeCode_INT64)
+		}
+	})
+
+	t.Run("PROTO with proto_type_fqn", func(t *testing.T) {
+		j := spanner.NullJSON{
+			Value: map[string]any{
+				"code":           "PROTO",
+				"proto_type_fqn": "com.example.MyMessage",
+			},
+			Valid: true,
+		}
+		got := decodeColumnTypeJSONToType(j)
+		if got.Code != TypeCode_PROTO {
+			t.Errorf("Code = %v, want %v", got.Code, TypeCode_PROTO)
+		}
+		if got.ProtoTypeFqn != "com.example.MyMessage" {
+			t.Errorf("ProtoTypeFqn = %v, want %q", got.ProtoTypeFqn, "com.example.MyMessage")
+		}
+	})
+
+	t.Run("ENUM with proto_type_fqn", func(t *testing.T) {
+		j := spanner.NullJSON{
+			Value: map[string]any{
+				"code":           "ENUM",
+				"proto_type_fqn": "com.example.MyEnum",
+			},
+			Valid: true,
+		}
+		got := decodeColumnTypeJSONToType(j)
+		if got.Code != TypeCode_ENUM {
+			t.Errorf("Code = %v, want %v", got.Code, TypeCode_ENUM)
+		}
+		if got.ProtoTypeFqn != "com.example.MyEnum" {
+			t.Errorf("ProtoTypeFqn = %v, want %q", got.ProtoTypeFqn, "com.example.MyEnum")
+		}
+	})
+
+	t.Run("ARRAY of PROTO with proto_type_fqn", func(t *testing.T) {
+		j := spanner.NullJSON{
+			Value: map[string]any{
+				"code": "ARRAY",
+				"array_element_type": map[string]any{
+					"code":           "PROTO",
+					"proto_type_fqn": "com.example.MyMessage",
+				},
+			},
+			Valid: true,
+		}
+		got := decodeColumnTypeJSONToType(j)
+		if got.Code != TypeCode_ARRAY {
+			t.Errorf("Code = %v, want %v", got.Code, TypeCode_ARRAY)
+		}
+		if got.ArrayElementType == nil {
+			t.Fatal("ArrayElementType is nil, want non-nil")
+		}
+		if got.ArrayElementType.Code != TypeCode_PROTO {
+			t.Errorf("ArrayElementType.Code = %v, want %v", got.ArrayElementType.Code, TypeCode_PROTO)
+		}
+		if got.ArrayElementType.ProtoTypeFqn != "com.example.MyMessage" {
+			t.Errorf("ArrayElementType.ProtoTypeFqn = %v, want %q", got.ArrayElementType.ProtoTypeFqn, "com.example.MyMessage")
 		}
 	})
 }
@@ -182,8 +244,11 @@ func TestDataChangeRecord_DecodeToNonSpannerType(t *testing.T) {
 	if ct1.Type.Code != TypeCode_ARRAY {
 		t.Errorf("ColumnTypes[1].Type.Code = %v, want %v", ct1.Type.Code, TypeCode_ARRAY)
 	}
-	if ct1.Type.ArrayElementType != TypeCode_STRING {
-		t.Errorf("ColumnTypes[1].Type.ArrayElementType = %v, want %v", ct1.Type.ArrayElementType, TypeCode_STRING)
+	if ct1.Type.ArrayElementType == nil {
+		t.Fatal("ColumnTypes[1].Type.ArrayElementType is nil, want non-nil")
+	}
+	if ct1.Type.ArrayElementType.Code != TypeCode_STRING {
+		t.Errorf("ColumnTypes[1].Type.ArrayElementType.Code = %v, want %v", ct1.Type.ArrayElementType.Code, TypeCode_STRING)
 	}
 
 	// Mods の検証

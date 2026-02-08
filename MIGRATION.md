@@ -190,6 +190,29 @@ If you're using the CLI, pass `--create-table` flag to automatically create the 
 $ spream -d ... -s ... -t PartitionMetadata --create-table
 ```
 
+### ColumnType.Type.ArrayElementType の型変更
+
+`Type.ArrayElementType` の型が `TypeCode` から `*Type` に変更されました。ARRAY<PROTO> や ARRAY<ENUM> の要素型に `ProtoTypeFqn` を保持するための変更です。
+
+**Before (v0.2.x):**
+```go
+ct.Type.ArrayElementType == spream.TypeCode_STRING
+```
+
+**After (v0.3.0):**
+```go
+ct.Type.ArrayElementType.Code == spream.TypeCode_STRING
+```
+
+`Type` 構造体に `ProtoTypeFqn` フィールドが追加されました。PROTO/ENUM 型のカラムで完全修飾名を取得できます:
+```go
+// スカラーの PROTO/ENUM
+ct.Type.ProtoTypeFqn // e.g. "my.package.MyMessage"
+
+// ARRAY<PROTO>/ARRAY<ENUM> の要素型
+ct.Type.ArrayElementType.ProtoTypeFqn // e.g. "my.package.MyMessage"
+```
+
 ### SpannerPartitionStorage Options
 
 The `WithRequestPriority` option (and the typo `WithRequestPriotiry`) has been removed. Configure the priority at the `spanner.Client` level using `NewClientWithConfig`, as shown above.
