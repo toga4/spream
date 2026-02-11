@@ -17,18 +17,19 @@ type PartitionMetadata struct {
 	FinishedAt      *time.Time `spanner:"FinishedAt" json:"finished_at,omitempty"`
 }
 
+// State represents the state of a partition in its lifecycle.
 type State string
 
+// Partition states.
 const (
-	StateCreated   State = "CREATED"
-	StateScheduled State = "SCHEDULED"
-	StateRunning   State = "RUNNING"
-	StateFinished  State = "FINISHED"
+	StateCreated   State = "CREATED"   // Partition is created but not yet scheduled.
+	StateScheduled State = "SCHEDULED" // Partition is scheduled for processing.
+	StateRunning   State = "RUNNING"   // Partition is currently being processed.
+	StateFinished  State = "FINISHED"  // Partition processing is complete.
 )
 
-const (
-	RootPartitionToken = "Parent0"
-)
+// RootPartitionToken is the token for the root partition.
+const RootPartitionToken = "Parent0"
 
 // IsRootPartition returns true if this is root partition.
 func (p *PartitionMetadata) IsRootPartition() bool {

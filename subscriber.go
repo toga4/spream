@@ -5,32 +5,134 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"cloud.google.com/go/spanner"
-	"cloud.google.com/go/spanner/apiv1/spannerpb"
-	"golang.org/x/sync/errgroup"
 )
 
-// Subscriber subscribes change stream.
+// Config holds the configuration for creating a Subscriber.
+// Required fields must be set; optional fields use sensible defaults when zero.
+type Config struct {
+	// Required fields.
+	SpannerClient    *spanner.Client
+	StreamName       string
+	PartitionStorage PartitionStorage
+	Consumer         Consumer
+
+	// Optional fields (zero values use defaults).
+
+	// BaseContext is the parent context for the Subscriber.
+	// It enables external cancellation propagation, tracing context inheritance,
+	// and deadline setting.
+	// Default: context.Background()
+	BaseContext context.Context
+
+	// StartTimestamp sets the start timestamp for reading change streams.
+	// The value must be within the retention period of the change stream
+	// and before the current time.
+	// Default: time.Now()
+	StartTimestamp time.Time
+
+	// EndTimestamp sets the end timestamp for reading change streams.
+	// The value must be within the retention period of the change stream
+	// and must be after the start timestamp.
+	// Default: 9999-12-31T23:59:59.999999999Z (maximum Spanner TIMESTAMP)
+	EndTimestamp time.Time
+
+	// HeartbeatInterval sets the heartbeat interval for reading change streams.
+	// Default: 10 seconds
+	HeartbeatInterval time.Duration
+
+	// MaxInflight sets the maximum number of concurrent record processing
+	// per partition.
+	// Default: 1 (sequential processing)
+	MaxInflight int
+
+	// PartitionDiscoveryInterval sets the interval for discovering new partitions.
+	// Default: 1 second
+	PartitionDiscoveryInterval time.Duration
+}
+
+// Default values for configuration.
+var (
+	defaultEndTimestamp               = time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC) // Maximum value of Spanner TIMESTAMP type.
+	defaultHeartbeatInterval          = 10 * time.Second
+	defaultMaxInflight                = 1
+	defaultPartitionDiscoveryInterval = 1 * time.Second
+)
+
+// nowFunc is a variable for testing purposes.
+var nowFunc = time.Now
+
+// Consumer is the interface to consume the DataChangeRecord.
+//
+// Consume is called from multiple goroutines concurrently.
+// Implementations must be thread-safe.
+//
+// Return values:
+//   - nil: Processing succeeded. spream will ack this record and advance the watermark.
+//   - error: Processing failed. spream will stop subscription.
+//
+// When ctx is canceled, Consume should return ctx.Err() promptly.
+type Consumer interface {
+	Consume(ctx context.Context, change *DataChangeRecord) error
+}
+
+// ConsumerFunc is an adapter to allow the use of ordinary functions as Consumer.
+type ConsumerFunc func(context.Context, *DataChangeRecord) error
+
+// Consume calls f(ctx, change).
+func (f ConsumerFunc) Consume(ctx context.Context, change *DataChangeRecord) error {
+	return f(ctx, change)
+}
+
+// Subscriber subscribes to a change stream.
+// It manages partition readers and coordinates change stream subscription.
+//
+// Subscribe can only be called once. If you need to subscribe again,
+// create a new Subscriber instance.
 type Subscriber struct {
-	spannerClient          *spanner.Client
-	streamName             string
-	startTimestamp         time.Time
-	endTimestamp           time.Time
-	heartbeatInterval      time.Duration
-	spannerRequestPriority spannerpb.RequestOptions_Priority
-	partitionStorage       PartitionStorage
-	consumer               Consumer
-	eg                     *errgroup.Group
-	mu                     sync.Mutex
+	// Configuration (immutable after NewSubscriber).
+	spannerClient              *spanner.Client
+	streamName                 string
+	partitionStorage           PartitionStorage
+	consumer                   Consumer
+	startTimestamp             time.Time
+	endTimestamp               time.Time
+	heartbeatInterval          time.Duration
+	maxInflight                int
+	partitionDiscoveryInterval time.Duration
+
+	// Partition management.
+	readersMu sync.RWMutex
+	readers   map[string]*partitionReader
+	draining  bool // protected by readersMu; set by drain() to reject new readers
+
+	// Control.
+	ctx      context.Context
+	cancel   context.CancelCauseFunc
+	wg       sync.WaitGroup
+	done     chan struct{}
+	waitOnce sync.Once
+
+	// State flags.
+	started  atomic.Bool // Subscribe() has been called (not reusable).
+	shutdown atomic.Bool // Shutdown() has been called.
+	closed   atomic.Bool // Close() has been called.
+
+	// Error handling.
+	// err records the first error from fail() and is returned by Subscribe()
+	// unless Close() was called (which returns ErrClosed).
+	// Uses atomic.Pointer for safe concurrent access between fail() and exitError().
+	err atomic.Pointer[error]
 }
 
 // PartitionStorage is an interface for storing and reading PartitionMetadata.
 type PartitionStorage interface {
 	GetUnfinishedMinWatermarkPartition(ctx context.Context) (*PartitionMetadata, error)
 	GetInterruptedPartitions(ctx context.Context) ([]*PartitionMetadata, error)
-	InitializeRootPartition(ctx context.Context, startTimestamp time.Time, endTimestamp time.Time, heartbeatInterval time.Duration) error
+	InitializeRootPartition(ctx context.Context, startTimestamp, endTimestamp time.Time, heartbeatInterval time.Duration) error
 	GetSchedulablePartitions(ctx context.Context, minWatermark time.Time) ([]*PartitionMetadata, error)
 	AddChildPartitions(ctx context.Context, endTimestamp time.Time, heartbeatMillis int64, childPartitionsRecord *ChildPartitionsRecord) error
 	UpdateToScheduled(ctx context.Context, partitionTokens []string) error
@@ -39,204 +141,253 @@ type PartitionStorage interface {
 	UpdateWatermark(ctx context.Context, partitionToken string, watermark time.Time) error
 }
 
-type config struct {
-	startTimestamp         time.Time
-	endTimestamp           time.Time
-	heartbeatInterval      time.Duration
-	spannerRequestPriority spannerpb.RequestOptions_Priority
-}
-
-type Option interface {
-	Apply(*config)
-}
-
-type withStartTimestamp time.Time
-
-func (o withStartTimestamp) Apply(c *config) {
-	c.startTimestamp = time.Time(o)
-}
-
-// WithStartTimestamp set the start timestamp option for read change streams.
-//
-// The value must be within the retention period of the change stream and before the current time.
-// Default value is current timestamp.
-func WithStartTimestamp(startTimestamp time.Time) Option {
-	return withStartTimestamp(startTimestamp)
-}
-
-type withEndTimestamp time.Time
-
-func (o withEndTimestamp) Apply(c *config) {
-	c.endTimestamp = time.Time(o)
-}
-
-// WithEndTimestamp set the end timestamp option for read change streams.
-//
-// The value must be within the retention period of the change stream and must be after the start timestamp.
-// If not set, read latest changes until canceled.
-func WithEndTimestamp(endTimestamp time.Time) Option {
-	return withEndTimestamp(endTimestamp)
-}
-
-type withHeartbeatInterval time.Duration
-
-func (o withHeartbeatInterval) Apply(c *config) {
-	c.heartbeatInterval = time.Duration(o)
-}
-
-// WithHeartbeatInterval set the heartbeat interval for read change streams.
-//
-// Default value is 10 seconds.
-func WithHeartbeatInterval(heartbeatInterval time.Duration) Option {
-	return withHeartbeatInterval(heartbeatInterval)
-}
-
-type withSpannerRequestPriority spannerpb.RequestOptions_Priority
-
-func (o withSpannerRequestPriority) Apply(c *config) {
-	c.spannerRequestPriority = spannerpb.RequestOptions_Priority(o)
-}
-
-// WithSpannerRequestPriority set the request priority option for read change streams.
-//
-// Default value is unspecified, equivalent to high.
-func WithSpannerRequestPriority(priority spannerpb.RequestOptions_Priority) Option {
-	return withSpannerRequestPriority(priority)
-}
-
-var (
-	defaultEndTimestamp      = time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC) // Maximum value of Spanner TIMESTAMP type.
-	defaultHeartbeatInterval = 10 * time.Second
-
-	nowFunc = time.Now
-)
-
 // NewSubscriber creates a new subscriber of change streams.
-func NewSubscriber(
-	client *spanner.Client,
-	streamName string,
-	partitionStorage PartitionStorage,
-	options ...Option,
-) *Subscriber {
-	c := &config{
-		startTimestamp:    nowFunc(),
-		endTimestamp:      defaultEndTimestamp,
-		heartbeatInterval: defaultHeartbeatInterval,
+// It validates the configuration and applies default values for optional fields.
+func NewSubscriber(cfg *Config) (*Subscriber, error) {
+	if cfg == nil {
+		return nil, errors.New("spream: config is required")
 	}
-	for _, o := range options {
-		o.Apply(c)
+	if cfg.SpannerClient == nil {
+		return nil, errors.New("spream: SpannerClient is required")
+	}
+	if cfg.StreamName == "" {
+		return nil, errors.New("spream: StreamName is required")
+	}
+	if cfg.PartitionStorage == nil {
+		return nil, errors.New("spream: PartitionStorage is required")
+	}
+	if cfg.Consumer == nil {
+		return nil, errors.New("spream: Consumer is required")
 	}
 
+	if cfg.MaxInflight < 0 {
+		return nil, errors.New("spream: MaxInflight must be non-negative")
+	}
+	if cfg.HeartbeatInterval < 0 {
+		return nil, errors.New("spream: HeartbeatInterval must be non-negative")
+	}
+	if cfg.PartitionDiscoveryInterval < 0 {
+		return nil, errors.New("spream: PartitionDiscoveryInterval must be non-negative")
+	}
+
+	startTimestamp := cfg.StartTimestamp
+	if startTimestamp.IsZero() {
+		startTimestamp = nowFunc()
+	}
+	endTimestamp := cfg.EndTimestamp
+	if endTimestamp.IsZero() {
+		endTimestamp = defaultEndTimestamp
+	}
+	heartbeatInterval := cfg.HeartbeatInterval
+	if heartbeatInterval == 0 {
+		heartbeatInterval = defaultHeartbeatInterval
+	}
+	maxInflight := cfg.MaxInflight
+	if maxInflight == 0 {
+		maxInflight = defaultMaxInflight
+	}
+	partitionDiscoveryInterval := cfg.PartitionDiscoveryInterval
+	if partitionDiscoveryInterval == 0 {
+		partitionDiscoveryInterval = defaultPartitionDiscoveryInterval
+	}
+	baseContext := cfg.BaseContext
+	if baseContext == nil {
+		baseContext = context.Background()
+	}
+
+	ctx, cancel := context.WithCancelCause(baseContext)
 	return &Subscriber{
-		spannerClient:          client,
-		streamName:             streamName,
-		startTimestamp:         c.startTimestamp,
-		endTimestamp:           c.endTimestamp,
-		heartbeatInterval:      c.heartbeatInterval,
-		spannerRequestPriority: c.spannerRequestPriority,
-		partitionStorage:       partitionStorage,
-	}
-}
-
-// Consumer is the interface to consume the DataChangeRecord.
-//
-// Consume might be called from multiple goroutines and must be re-entrant safe.
-type Consumer interface {
-	Consume(change *DataChangeRecord) error
-}
-
-// ConsumerFunc type is an adapter to allow the use of ordinary functions as Consumer.
-type ConsumerFunc func(*DataChangeRecord) error
-
-// Consume calls f(change).
-func (f ConsumerFunc) Consume(change *DataChangeRecord) error {
-	return f(change)
+		spannerClient:              cfg.SpannerClient,
+		streamName:                 cfg.StreamName,
+		partitionStorage:           cfg.PartitionStorage,
+		consumer:                   cfg.Consumer,
+		startTimestamp:             startTimestamp,
+		endTimestamp:               endTimestamp,
+		heartbeatInterval:          heartbeatInterval,
+		maxInflight:                maxInflight,
+		partitionDiscoveryInterval: partitionDiscoveryInterval,
+		// Runtime state (initialized here to avoid data races).
+		readers: make(map[string]*partitionReader),
+		ctx:     ctx,
+		cancel:  cancel,
+		done:    make(chan struct{}),
+	}, nil
 }
 
 // Subscribe starts subscribing to the change stream.
-func (s *Subscriber) Subscribe(ctx context.Context, consumer Consumer) error {
-	eg, ctx := s.initErrGroup(ctx)
-	s.consumer = consumer
+// It blocks until one of the following occurs:
+//   - All partitions are processed to endTimestamp (returns nil)
+//   - Shutdown is called (returns ErrShutdown immediately)
+//   - Close is called (returns ErrClosed)
+//   - An error occurs (returns the error)
+//
+// Subscribe can only be called once. Subsequent calls return an error.
+func (s *Subscriber) Subscribe() error {
+	// Subscriber is single-use; reject concurrent or repeated calls.
+	if s.started.Swap(true) {
+		return errors.New("spream: subscriber already started")
+	}
 
+	defer s.cancel(nil)
+
+	// Shutdown/Close cancel s.ctx, which causes initialize and resumeInterruptedPartitions to fail with context.Canceled.
+	// Check exitError first so Subscribe returns the sentinel (ErrShutdown / ErrClosed) instead of an internal wrapped error.
+	if err := s.initialize(); err != nil {
+		if exitErr := s.exitError(); exitErr != nil {
+			return exitErr
+		}
+		return fmt.Errorf("initialize: %w", err)
+	}
+
+	if err := s.resumeInterruptedPartitions(); err != nil {
+		if exitErr := s.exitError(); exitErr != nil {
+			return exitErr
+		}
+		return fmt.Errorf("resume interrupted partitions: %w", err)
+	}
+
+	s.runMainLoop()
+
+	return s.exitError()
+}
+
+// Shutdown gracefully shuts down the subscriber.
+// It causes Subscribe to return ErrShutdown immediately, then waits for in-flight records to complete (drain).
+//
+// If the context is canceled or times out before drain completes, Shutdown returns ctx.Err().
+// The drain continues in the background; call Close to abort it.
+func (s *Subscriber) Shutdown(ctx context.Context) error {
+	if !s.shutdown.Swap(true) {
+		s.cancel(errGracefulShutdown)
+	}
+
+	select {
+	case <-s.drain():
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Close immediately closes the subscriber.
+// It does not wait for in-flight records to complete.
+// Subscribe returns ErrClosed.
+func (s *Subscriber) Close() error {
+	if !s.closed.Swap(true) {
+		s.cancel(ErrClosed)
+
+		// Force close all readers to break out of drainInflight.
+		s.readersMu.RLock()
+		for _, reader := range s.readers {
+			reader.close()
+		}
+		s.readersMu.RUnlock()
+	}
+
+	<-s.drain()
+	return nil
+}
+
+// runMainLoop runs the main partition detection loop.
+// It returns when shutdown is requested, context is canceled,
+// all readers finish, or an error occurs.
+func (s *Subscriber) runMainLoop() {
+	ticker := time.NewTicker(s.partitionDiscoveryInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+
+		case <-s.done:
+			return
+
+		case <-ticker.C:
+			if err := s.detectAndSchedulePartitions(); err != nil {
+				if errors.Is(err, errAllPartitionsFinished) {
+					ticker.Stop()
+					// Start drain but don't wait; completion is detected via case <-s.done.
+					s.drain()
+					continue
+				}
+				// Do not record errors caused by context cancellation from Shutdown/Close
+				// in fail. exitError returns the appropriate error based on
+				// the shutdown/closed flags.
+				if s.ctx.Err() != nil {
+					return
+				}
+				s.fail(err)
+				return
+			}
+		}
+	}
+}
+
+// exitError determines the return value based on shutdown/close state and errors.
+// Priority: Close > Error > Shutdown > BaseContext cancellation > nil (normal completion).
+// Error takes precedence over Shutdown because if an error occurs during
+// graceful shutdown, that error should be reported instead of ErrShutdown.
+func (s *Subscriber) exitError() error {
+	if s.closed.Load() {
+		return ErrClosed
+	}
+	if p := s.err.Load(); p != nil {
+		return *p
+	}
+	if s.shutdown.Load() {
+		return ErrShutdown
+	}
+	// BaseContext was canceled externally (not by Shutdown/Close).
+	// Return the cause so callers can distinguish this from normal completion (nil).
+	if s.ctx.Err() != nil {
+		return context.Cause(s.ctx)
+	}
+	return nil
+}
+
+func (s *Subscriber) initialize() error {
 	// Initialize root partition if this is the first run or if the previous run has already been completed.
-	minWatermarkPartition, err := s.partitionStorage.GetUnfinishedMinWatermarkPartition(ctx)
+	minWatermarkPartition, err := s.partitionStorage.GetUnfinishedMinWatermarkPartition(s.ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get unfinished min watermark partition on start subscribe: %w", err)
+		return fmt.Errorf("get unfinished min watermark partition: %w", err)
 	}
 	if minWatermarkPartition == nil {
-		if err := s.partitionStorage.InitializeRootPartition(ctx, s.startTimestamp, s.endTimestamp, s.heartbeatInterval); err != nil {
+		if err := s.partitionStorage.InitializeRootPartition(
+			s.ctx,
+			s.startTimestamp,
+			s.endTimestamp,
+			s.heartbeatInterval,
+		); err != nil {
 			return fmt.Errorf("failed to initialize root partition: %w", err)
 		}
 	}
+	return nil
+}
 
-	interruptedPartitions, err := s.partitionStorage.GetInterruptedPartitions(ctx)
+func (s *Subscriber) resumeInterruptedPartitions() error {
+	interruptedPartitions, err := s.partitionStorage.GetInterruptedPartitions(s.ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get interrupted partitions: %w", err)
 	}
 	for _, p := range interruptedPartitions {
-		s.eg.Go(func() error {
-			return s.queryChangeStream(ctx, p)
-		})
+		s.startPartitionReader(p)
 	}
-
-	eg.Go(func() error {
-		ticker := time.NewTicker(time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				err := s.detectNewPartitions(ctx)
-				switch err {
-				case errDone:
-					return nil
-				case nil:
-					// continue
-				default:
-					return err
-				}
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-	})
-
-	return eg.Wait()
+	return nil
 }
 
-// SubscribeFunc is an adapter to allow the use of ordinary functions as Consumer.
-//
-// The provided function might be called from multiple goroutines and must be re-entrant safe.
-func (s *Subscriber) SubscribeFunc(ctx context.Context, f ConsumerFunc) error {
-	return s.Subscribe(ctx, f)
-}
-
-func (s *Subscriber) initErrGroup(ctx context.Context) (*errgroup.Group, context.Context) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.eg != nil {
-		panic("Subscriber has already started subscribe.")
-	}
-
-	eg, ctx := errgroup.WithContext(ctx)
-	s.eg = eg
-	return eg, ctx
-}
-
-var errDone = errors.New("all partitions have been processed")
-
-func (s *Subscriber) detectNewPartitions(ctx context.Context) error {
-	minWatermarkPartition, err := s.partitionStorage.GetUnfinishedMinWatermarkPartition(ctx)
+func (s *Subscriber) detectAndSchedulePartitions() error {
+	minWatermarkPartition, err := s.partitionStorage.GetUnfinishedMinWatermarkPartition(s.ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get unfinished min watermark partition: %w", err)
 	}
 
 	if minWatermarkPartition == nil {
-		return errDone
+		return errAllPartitionsFinished
 	}
 
-	// To make sure changes for a key is processed in timestamp order, wait until the records returned from all parents have been processed.
-	partitions, err := s.partitionStorage.GetSchedulablePartitions(ctx, minWatermarkPartition.Watermark)
+	// To make sure changes for a key are processed in timestamp order, wait until the records returned from all parents have been processed.
+	partitions, err := s.partitionStorage.GetSchedulablePartitions(s.ctx, minWatermarkPartition.Watermark)
 	if err != nil {
 		return fmt.Errorf("failed to get schedulable partitions: %w", err)
 	}
@@ -248,97 +399,73 @@ func (s *Subscriber) detectNewPartitions(ctx context.Context) error {
 	for _, p := range partitions {
 		partitionTokens = append(partitionTokens, p.PartitionToken)
 	}
-	if err := s.partitionStorage.UpdateToScheduled(ctx, partitionTokens); err != nil {
+	if err := s.partitionStorage.UpdateToScheduled(s.ctx, partitionTokens); err != nil {
 		return fmt.Errorf("failed to update to scheduled: %w", err)
 	}
 
 	for _, p := range partitions {
-		s.eg.Go(func() error {
-			return s.queryChangeStream(ctx, p)
-		})
+		s.startPartitionReader(p)
 	}
 
 	return nil
 }
 
-func (s *Subscriber) queryChangeStream(ctx context.Context, p *PartitionMetadata) error {
-	if err := s.partitionStorage.UpdateToRunning(ctx, p.PartitionToken); err != nil {
-		return fmt.Errorf("failed to update to running: %w", err)
+func (s *Subscriber) startPartitionReader(partition *PartitionMetadata) {
+	s.readersMu.Lock()
+	defer s.readersMu.Unlock()
+
+	if s.draining {
+		return
 	}
 
-	stmt := spanner.Statement{
-		SQL: fmt.Sprintf("SELECT ChangeRecord FROM READ_%s (@startTimestamp, @endTimestamp, @partitionToken, @heartbeatMilliseconds)", s.streamName),
-		Params: map[string]any{
-			"startTimestamp":        p.Watermark,
-			"endTimestamp":          p.EndTimestamp,
-			"partitionToken":        p.PartitionToken,
-			"heartbeatMilliseconds": p.HeartbeatMillis,
-		},
+	// A partition may appear in multiple discovery cycles; skip to prevent duplicate reads.
+	if _, exists := s.readers[partition.PartitionToken]; exists {
+		return
 	}
 
-	if p.IsRootPartition() {
-		// Must be converted to NULL (root partition).
-		stmt.Params["partitionToken"] = nil
-	}
+	reader := newPartitionReader(
+		s.ctx,
+		partition,
+		s.spannerClient,
+		s.streamName,
+		s.partitionStorage,
+		s.consumer,
+		s.maxInflight,
+	)
+	s.readers[partition.PartitionToken] = reader
 
-	iter := s.spannerClient.Single().QueryWithOptions(ctx, stmt, spanner.QueryOptions{Priority: s.spannerRequestPriority})
-	if err := iter.Do(func(r *spanner.Row) error {
-		records := []*changeRecord{}
-		if err := r.Columns(&records); err != nil {
-			return err
-		}
-		if err := s.handle(ctx, p, records); err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-
-	if err := s.partitionStorage.UpdateToFinished(ctx, p.PartitionToken); err != nil {
-		return fmt.Errorf("failed to update to finished: %w", err)
-	}
-
-	return nil
-}
-
-type watermarker struct {
-	watermark time.Time
-}
-
-func (w *watermarker) set(t time.Time) {
-	if t.After(w.watermark) {
-		w.watermark = t
-	}
-}
-
-func (w *watermarker) get() time.Time {
-	return w.watermark
-}
-
-func (s *Subscriber) handle(ctx context.Context, p *PartitionMetadata, records []*changeRecord) error {
-	var watermarker watermarker
-	for _, cr := range records {
-		for _, record := range cr.DataChangeRecords {
-			if err := s.consumer.Consume(record.decodeToNonSpannerType()); err != nil {
-				return err
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		if err := reader.run(s.ctx); err != nil {
+			if !errors.Is(err, context.Canceled) {
+				s.fail(err)
 			}
-			watermarker.set(record.CommitTimestamp)
 		}
-		for _, record := range cr.HeartbeatRecords {
-			watermarker.set(record.Timestamp)
-		}
-		for _, record := range cr.ChildPartitionsRecords {
-			if err := s.partitionStorage.AddChildPartitions(ctx, p.EndTimestamp, p.HeartbeatMillis, record); err != nil {
-				return fmt.Errorf("failed to add child partitions: %w", err)
-			}
-			watermarker.set(record.StartTimestamp)
-		}
-	}
+		s.readersMu.Lock()
+		defer s.readersMu.Unlock()
+		delete(s.readers, partition.PartitionToken)
+	}()
+}
 
-	if err := s.partitionStorage.UpdateWatermark(ctx, p.PartitionToken, watermarker.get()); err != nil {
-		return fmt.Errorf("failed to update watermark: %w", err)
-	}
+// drain waits for all goroutines to finish and returns a channel that is closed when done.
+// Safe to call multiple times; only the first call starts the wait goroutine.
+func (s *Subscriber) drain() <-chan struct{} {
+	s.waitOnce.Do(func() {
+		s.readersMu.Lock()
+		s.draining = true
+		s.readersMu.Unlock()
 
-	return nil
+		go func() {
+			s.wg.Wait()
+			close(s.done)
+		}()
+	})
+	return s.done
+}
+
+func (s *Subscriber) fail(err error) {
+	if s.err.CompareAndSwap(nil, &err) {
+		s.cancel(err)
+	}
 }
