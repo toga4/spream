@@ -123,7 +123,7 @@ func ensureInstance(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer instanceAdminClient.Close()
+	defer func() { _ = instanceAdminClient.Close() }()
 
 	// Reuse the instance if it already exists.
 	_, err = instanceAdminClient.GetInstance(ctx, &instancepb.GetInstanceRequest{
@@ -176,7 +176,7 @@ func scheduleInstanceDeletion(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("cloudtasks.NewClient: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	task := &cloudtaskspb.Task{
 		ScheduleTime: timestamppb.New(time.Now().Add(55 * time.Minute)),
@@ -252,7 +252,7 @@ func createInstance(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer instanceAdminClient.Close()
+	defer func() { _ = instanceAdminClient.Close() }()
 
 	op, err := instanceAdminClient.CreateInstance(ctx, &instancepb.CreateInstanceRequest{
 		Parent:     "projects/" + testProjectID,
@@ -294,11 +294,11 @@ func createTestDatabase(ctx context.Context, t *testing.T, ddlStatements ...stri
 		ExtraStatements: ddlStatements,
 	})
 	if err != nil {
-		databaseAdminClient.Close()
+		_ = databaseAdminClient.Close()
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	if _, err := op.Wait(ctx); err != nil {
-		databaseAdminClient.Close()
+		_ = databaseAdminClient.Close()
 		t.Fatalf("Failed to create database: %v", err)
 	}
 
@@ -311,10 +311,10 @@ func createTestDatabase(ctx context.Context, t *testing.T, ddlStatements ...stri
 			}); err != nil {
 				t.Logf("Failed to drop database %s: %v", dbPath, err)
 			}
-			databaseAdminClient.Close()
+			_ = databaseAdminClient.Close()
 		})
 	} else {
-		databaseAdminClient.Close()
+		_ = databaseAdminClient.Close()
 	}
 
 	return dbPath
@@ -484,7 +484,7 @@ func TestSubscriber_DataChangeRecord(t *testing.T) {
 	go func() {
 		subscribeDone <- subscriber.Subscribe()
 	}()
-	defer subscriber.Close()
+	defer func() { _ = subscriber.Close() }()
 
 	// The emulator may optimize INSERT followed by DELETE within the same transaction to zero records.
 	// Execute INSERT, UPDATE, DELETE in separate transactions.
@@ -606,10 +606,10 @@ func TestSubscriber_DataChangeRecord(t *testing.T) {
 				},
 				OldValues: map[string]any{},
 			}},
-			ModType:                              spream.ModType_INSERT,
-			ValueCaptureType:                     "OLD_AND_NEW_VALUES",
-			NumberOfRecordsInTransaction:         1,
-			NumberOfPartitionsInTransaction:      1,
+			ModType:                         spream.ModType_INSERT,
+			ValueCaptureType:                "OLD_AND_NEW_VALUES",
+			NumberOfRecordsInTransaction:    1,
+			NumberOfPartitionsInTransaction: 1,
 		},
 		{
 			TableName:                            tableName,
@@ -671,10 +671,10 @@ func TestSubscriber_DataChangeRecord(t *testing.T) {
 					"JsonArray":      []any{`{"name":"foobar"}`, `{"name":"barbaz"}`},
 				},
 			}},
-			ModType:                              spream.ModType_UPDATE,
-			ValueCaptureType:                     "OLD_AND_NEW_VALUES",
-			NumberOfRecordsInTransaction:         1,
-			NumberOfPartitionsInTransaction:      1,
+			ModType:                         spream.ModType_UPDATE,
+			ValueCaptureType:                "OLD_AND_NEW_VALUES",
+			NumberOfRecordsInTransaction:    1,
+			NumberOfPartitionsInTransaction: 1,
 		},
 		{
 			TableName:                            tableName,
@@ -702,7 +702,7 @@ func TestSubscriber_DataChangeRecord(t *testing.T) {
 				{Name: "JsonArray", Type: spream.Type{Code: spream.TypeCode_ARRAY, ArrayElementType: &spream.Type{Code: spream.TypeCode_JSON}}, OrdinalPosition: 20},
 			},
 			Mods: []*spream.Mod{{
-				Keys: map[string]any{"Int64": "1"},
+				Keys:      map[string]any{"Int64": "1"},
 				NewValues: map[string]any{},
 				OldValues: map[string]any{
 					"Bool": false, "Float32": 0.25, "Float64": 0.5,
@@ -721,10 +721,10 @@ func TestSubscriber_DataChangeRecord(t *testing.T) {
 					"JsonArray":      []any{`{"name":"foobar"}`, `{"name":"barbaz"}`},
 				},
 			}},
-			ModType:                              spream.ModType_DELETE,
-			ValueCaptureType:                     "OLD_AND_NEW_VALUES",
-			NumberOfRecordsInTransaction:         1,
-			NumberOfPartitionsInTransaction:      1,
+			ModType:                         spream.ModType_DELETE,
+			ValueCaptureType:                "OLD_AND_NEW_VALUES",
+			NumberOfRecordsInTransaction:    1,
+			NumberOfPartitionsInTransaction: 1,
 		},
 	}
 
@@ -782,7 +782,7 @@ func TestSubscriber_Shutdown(t *testing.T) {
 	select {
 	case <-consumerStarted:
 	case <-time.After(30 * time.Second):
-		subscriber.Close()
+		_ = subscriber.Close()
 		t.Fatal("Consumer was not called within timeout")
 	}
 
@@ -863,7 +863,7 @@ func TestSubscriber_Close(t *testing.T) {
 	select {
 	case <-consumerStarted:
 	case <-time.After(30 * time.Second):
-		subscriber.Close()
+		_ = subscriber.Close()
 		t.Fatal("Consumer was not called within timeout")
 	}
 
@@ -919,7 +919,7 @@ func TestSubscriber_ConsumerError(t *testing.T) {
 			t.Errorf("Subscribe() = %v, want %v", err, consumerErr)
 		}
 	case <-time.After(30 * time.Second):
-		subscriber.Close()
+		_ = subscriber.Close()
 		t.Fatal("Subscribe() did not return after consumer error")
 	}
 }
@@ -965,7 +965,7 @@ func TestSubscriber_ShutdownTimeout(t *testing.T) {
 	select {
 	case <-consumerStarted:
 	case <-time.After(30 * time.Second):
-		subscriber.Close()
+		_ = subscriber.Close()
 		t.Fatal("Consumer was not called within timeout")
 	}
 
@@ -1027,12 +1027,12 @@ func TestSubscriber_AtLeastOnce(t *testing.T) {
 	}
 
 	if !waitForRecords(consumer1, 3, 30*time.Second) {
-		subscriber1.Close()
+		_ = subscriber1.Close()
 		t.Fatalf("First subscriber: got %d records, want 3", consumer1.count())
 	}
 
 	// Force-interrupt with Close. Some records may be redelivered depending on watermark update timing.
-	subscriber1.Close()
+	_ = subscriber1.Close()
 	<-subscribeDone1
 
 	// Round 2: Create a new Subscriber with the same PartitionStorage.
@@ -1059,11 +1059,11 @@ func TestSubscriber_AtLeastOnce(t *testing.T) {
 	// The second subscriber receives at least the INSERT for key=4.
 	// Depending on the watermark position, some of key=1,2,3 may be redelivered (at-least-once).
 	if !waitForRecords(consumer2, 1, 30*time.Second) {
-		subscriber2.Close()
+		_ = subscriber2.Close()
 		t.Fatalf("Second subscriber: got %d records, want >= 1", consumer2.count())
 	}
 
-	subscriber2.Close()
+	_ = subscriber2.Close()
 
 	// Verify that the total across round 1 and round 2 is at least 4 records (at-least-once).
 	total := consumer1.count() + consumer2.count()
@@ -1115,7 +1115,7 @@ func TestSubscriber_MaxInflight(t *testing.T) {
 	go func() {
 		_ = subscriber.Subscribe()
 	}()
-	defer subscriber.Close()
+	defer func() { _ = subscriber.Close() }()
 
 	// Insert multiple rows. Each row is in a separate transaction to produce independent DataChangeRecords.
 	for i := int64(1); i <= 5; i++ {
@@ -1233,11 +1233,11 @@ func TestSubscriber_DataChangeRecord_ExtendedTypes(t *testing.T) {
 		ProtoDescriptors: protoBytes,
 	})
 	if err != nil {
-		databaseAdminClient.Close()
+		_ = databaseAdminClient.Close()
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	if _, err := op.Wait(ctx); err != nil {
-		databaseAdminClient.Close()
+		_ = databaseAdminClient.Close()
 		t.Fatalf("Failed to wait for database creation: %v", err)
 	}
 
@@ -1248,7 +1248,7 @@ func TestSubscriber_DataChangeRecord_ExtendedTypes(t *testing.T) {
 		}); err != nil {
 			t.Logf("Failed to drop database %s: %v", dbPath, err)
 		}
-		databaseAdminClient.Close()
+		_ = databaseAdminClient.Close()
 	})
 
 	spannerClient, err := spanner.NewClient(ctx, dbPath, spannerClientOptions...)
@@ -1274,7 +1274,7 @@ func TestSubscriber_DataChangeRecord_ExtendedTypes(t *testing.T) {
 	go func() {
 		subscribeDone <- subscriber.Subscribe()
 	}()
-	defer subscriber.Close()
+	defer func() { _ = subscriber.Close() }()
 
 	// Execute INSERT.
 	insertSQL := fmt.Sprintf(`INSERT INTO %s (Key, ProtoCol, EnumCol, UuidCol) VALUES (@key, @proto, @enum, @uuid)`, tableName)
@@ -1337,10 +1337,10 @@ func TestSubscriber_DataChangeRecord_ExtendedTypes(t *testing.T) {
 				},
 				OldValues: map[string]any{},
 			}},
-			ModType:                              spream.ModType_INSERT,
-			ValueCaptureType:                     "OLD_AND_NEW_VALUES",
-			NumberOfRecordsInTransaction:         1,
-			NumberOfPartitionsInTransaction:      1,
+			ModType:                         spream.ModType_INSERT,
+			ValueCaptureType:                "OLD_AND_NEW_VALUES",
+			NumberOfRecordsInTransaction:    1,
+			NumberOfPartitionsInTransaction: 1,
 		},
 	}
 
@@ -1373,7 +1373,7 @@ func TestSubscriber_EndTimestamp(t *testing.T) {
 		StreamName:       streamName,
 		PartitionStorage: storage,
 		Consumer:         consumer,
-		EndTimestamp:      endTimestamp,
+		EndTimestamp:     endTimestamp,
 	})
 	if err != nil {
 		t.Fatalf("Failed to create subscriber: %v", err)
@@ -1405,7 +1405,7 @@ func TestSubscriber_EndTimestamp(t *testing.T) {
 			t.Errorf("Subscribe() = %v, want nil", err)
 		}
 	case <-time.After(60 * time.Second):
-		subscriber.Close()
+		_ = subscriber.Close()
 		t.Fatal("Subscribe() did not return after EndTimestamp")
 	}
 }

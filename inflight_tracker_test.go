@@ -51,11 +51,11 @@ func TestInflightTracker_ContinuousAck(t *testing.T) {
 	ts1 := ts0.Add(time.Second)
 	ts2 := ts0.Add(2 * time.Second)
 
-	tracker.acquire(ctx)
+	_ = tracker.acquire(ctx)
 	seq0 := tracker.add(ts0)
-	tracker.acquire(ctx)
+	_ = tracker.acquire(ctx)
 	seq1 := tracker.add(ts1)
-	tracker.acquire(ctx)
+	_ = tracker.acquire(ctx)
 	seq2 := tracker.add(ts2)
 
 	// Complete in order: 2, 0, 1.
@@ -115,7 +115,7 @@ func TestInflightTracker_Error(t *testing.T) {
 	tracker := newInflightTracker(3)
 	ctx := context.Background()
 
-	tracker.acquire(ctx)
+	_ = tracker.acquire(ctx)
 	seq := tracker.add(time.Now())
 
 	// Complete with error.
@@ -147,9 +147,9 @@ func TestInflightTracker_Backpressure(t *testing.T) {
 	ctx := context.Background()
 
 	// Acquire 2 slots.
-	tracker.acquire(ctx)
+	_ = tracker.acquire(ctx)
 	tracker.add(time.Now())
-	tracker.acquire(ctx)
+	_ = tracker.acquire(ctx)
 	tracker.add(time.Now())
 
 	// Third acquire should block.
@@ -169,9 +169,9 @@ func TestInflightTracker_GracefulShutdown(t *testing.T) {
 	ctx := context.Background()
 
 	// Add some records.
-	tracker.acquire(ctx)
+	_ = tracker.acquire(ctx)
 	seq0 := tracker.add(time.Now())
-	tracker.acquire(ctx)
+	_ = tracker.acquire(ctx)
 	seq1 := tracker.add(time.Now().Add(time.Second))
 
 	// Complete records in background after a short delay.
@@ -262,14 +262,14 @@ func TestInflightTracker_MixedAck(t *testing.T) {
 	ts3 := ts0.Add(3 * time.Second)
 
 	// DataChangeRecord at ts0.
-	tracker.acquire(ctx)
+	_ = tracker.acquire(ctx)
 	seq0 := tracker.add(ts0)
 
 	// HeartbeatRecord at ts1.
 	tracker.ackImmediate(ts1)
 
 	// DataChangeRecord at ts2.
-	tracker.acquire(ctx)
+	_ = tracker.acquire(ctx)
 	seq2 := tracker.add(ts2)
 
 	// HeartbeatRecord at ts3.

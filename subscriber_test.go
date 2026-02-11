@@ -100,10 +100,10 @@ func newTestSubscriber(storage PartitionStorage, partitionDiscoveryInterval time
 		heartbeatInterval:          defaultHeartbeatInterval,
 		maxInflight:                defaultMaxInflight,
 		partitionDiscoveryInterval: partitionDiscoveryInterval,
-		readers: make(map[string]*partitionReader),
-		ctx:     ctx,
-		cancel:  cancel,
-		done:    make(chan struct{}),
+		readers:                    make(map[string]*partitionReader),
+		ctx:                        ctx,
+		cancel:                     cancel,
+		done:                       make(chan struct{}),
 	}
 }
 
@@ -137,7 +137,7 @@ func TestSubscriber_Shutdown(t *testing.T) {
 		// Call shutdown. Subscribe should return ErrShutdown immediately.
 		go func() {
 			ctx := context.Background()
-			subscriber.Shutdown(ctx)
+			_ = subscriber.Shutdown(ctx)
 		}()
 
 		// Subscribe() should return ErrShutdown immediately.
@@ -168,7 +168,7 @@ func TestSubscriber_Shutdown(t *testing.T) {
 
 		// Run subscriber in a goroutine.
 		go func() {
-			subscriber.Subscribe()
+			_ = subscriber.Subscribe()
 		}()
 
 		// Wait for subscriber to start.
@@ -255,7 +255,7 @@ func TestSubscriber_Close(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 
 		// Close the subscriber.
-		subscriber.Close()
+		_ = subscriber.Close()
 
 		// Subscribe() should return ErrClosed.
 		runErr := <-runDone
@@ -290,7 +290,7 @@ func TestSubscriber_Close(t *testing.T) {
 
 		// Call close directly (which sets closed and cancels context).
 		// This should cause Subscribe() to return ErrClosed.
-		subscriber.Close()
+		_ = subscriber.Close()
 
 		runErr := <-runDone
 		if diff := cmp.Diff(ErrClosed, runErr, cmpopts.EquateErrors()); diff != "" {
@@ -326,14 +326,14 @@ func TestSubscriber_exitError(t *testing.T) {
 			want: nil,
 		},
 		{
-			name:         "shutdown only returns ErrShutdown",
+			name:     "shutdown only returns ErrShutdown",
 			shutdown: true,
-			want:         ErrShutdown,
+			want:     ErrShutdown,
 		},
 		{
-			name:       "close only returns ErrClosed",
+			name:   "close only returns ErrClosed",
 			closed: true,
-			want:       ErrClosed,
+			want:   ErrClosed,
 		},
 		{
 			name: "error only returns that error",
@@ -341,23 +341,23 @@ func TestSubscriber_exitError(t *testing.T) {
 			want: testErr,
 		},
 		{
-			name:         "error takes precedence over shutdown",
+			name:     "error takes precedence over shutdown",
 			shutdown: true,
-			err:          testErr,
-			want:         testErr,
+			err:      testErr,
+			want:     testErr,
 		},
 		{
-			name:       "close takes precedence over error",
+			name:   "close takes precedence over error",
 			closed: true,
-			err:        testErr,
-			want:       ErrClosed,
+			err:    testErr,
+			want:   ErrClosed,
 		},
 		{
-			name:         "close takes precedence over shutdown and error",
+			name:     "close takes precedence over shutdown and error",
 			closed:   true,
 			shutdown: true,
-			err:          testErr,
-			want:         ErrClosed,
+			err:      testErr,
+			want:     ErrClosed,
 		},
 	}
 
@@ -446,7 +446,7 @@ func TestSubscriber_AlreadyStarted(t *testing.T) {
 
 		// Start the first Subscribe in a goroutine.
 		go func() {
-			subscriber.Subscribe()
+			_ = subscriber.Subscribe()
 		}()
 
 		// Wait for subscriber to start.
@@ -459,7 +459,7 @@ func TestSubscriber_AlreadyStarted(t *testing.T) {
 		}
 
 		// Cleanup.
-		subscriber.Close()
+		_ = subscriber.Close()
 	})
 }
 
@@ -514,7 +514,7 @@ func TestSubscriber_fail(t *testing.T) {
 		s.fail(err1)
 		s.fail(err2)
 
-		if s.err != err1 {
+		if !errors.Is(s.err, err1) {
 			t.Errorf("err = %v, want %v", s.err, err1)
 		}
 	})
@@ -845,7 +845,7 @@ func TestSubscriber_Close_WithReaders(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 
 		// Close force-terminates the readers.
-		subscriber.Close()
+		_ = subscriber.Close()
 
 		select {
 		case err := <-runDone:

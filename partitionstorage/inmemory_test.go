@@ -143,17 +143,17 @@ func TestInmemoryPartitionStorage_GetSchedulablePartitions(t *testing.T) {
 		storage.m["token-1"] = &spream.PartitionMetadata{
 			PartitionToken: "token-1",
 			State:          spream.StateCreated,
-			StartTimestamp:  ts, // Schedulable because minWatermark(ts) <= ts.
+			StartTimestamp: ts, // Schedulable because minWatermark(ts) <= ts.
 		}
 		storage.m["token-2"] = &spream.PartitionMetadata{
 			PartitionToken: "token-2",
 			State:          spream.StateCreated,
-			StartTimestamp:  ts.Add(-time.Hour), // Not schedulable because minWatermark(ts) > ts-1h.
+			StartTimestamp: ts.Add(-time.Hour), // Not schedulable because minWatermark(ts) > ts-1h.
 		}
 		storage.m["token-3"] = &spream.PartitionMetadata{
 			PartitionToken: "token-3",
 			State:          spream.StateScheduled, // Not schedulable because state is not CREATED.
-			StartTimestamp:  ts,
+			StartTimestamp: ts,
 		}
 
 		got, err := storage.GetSchedulablePartitions(ctx, ts)

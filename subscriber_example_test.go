@@ -54,7 +54,7 @@ func ExampleNewSubscriber() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := subscriber.Shutdown(shutdownCtx); err != nil {
-		subscriber.Close()
+		_ = subscriber.Close()
 	}
 
 	if err := <-done; err != nil && !errors.Is(err, spream.ErrShutdown) {

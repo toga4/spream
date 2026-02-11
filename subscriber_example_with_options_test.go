@@ -36,7 +36,7 @@ func ExampleNewSubscriber_withOptions() {
 		StreamName:        "FooStream",
 		PartitionStorage:  partitionStorage,
 		Consumer:          &Logger{out: os.Stdout},
-		StartTimestamp:    time.Now().Add(-time.Hour),  // Start subscribing from 1 hour ago.
+		StartTimestamp:    time.Now().Add(-time.Hour),      // Start subscribing from 1 hour ago.
 		EndTimestamp:      time.Now().Add(5 * time.Minute), // Stop subscribing after 5 minutes.
 		HeartbeatInterval: 3 * time.Second,
 	})
@@ -55,7 +55,7 @@ func ExampleNewSubscriber_withOptions() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := subscriber.Shutdown(shutdownCtx); err != nil {
-		subscriber.Close()
+		_ = subscriber.Close()
 	}
 
 	if err := <-done; err != nil && !errors.Is(err, spream.ErrShutdown) {

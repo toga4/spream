@@ -98,7 +98,7 @@ Options:
 		t, err := time.Parse(time.RFC3339, start)
 		if err != nil {
 			fs.Usage()
-			return nil, fmt.Errorf("invalid start timestamp: %v", err)
+			return nil, fmt.Errorf("invalid start timestamp: %w", err)
 		}
 		flags.startTimestamp = t
 	}
@@ -106,7 +106,7 @@ Options:
 		t, err := time.Parse(time.RFC3339, end)
 		if err != nil {
 			fs.Usage()
-			return nil, fmt.Errorf("invalid end timestamp: %v", err)
+			return nil, fmt.Errorf("invalid end timestamp: %w", err)
 		}
 		flags.endTimestamp = t
 	}
@@ -209,7 +209,7 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := subscriber.Shutdown(shutdownCtx); err != nil {
-		subscriber.Close()
+		_ = subscriber.Close()
 	}
 
 	if err := <-done; err != nil && !errors.Is(err, spream.ErrShutdown) {
@@ -223,7 +223,7 @@ func createPartitionMetadataTable(ctx context.Context, databaseName, tableName s
 	if err != nil {
 		return err
 	}
-	defer adminClient.Close()
+	defer func() { _ = adminClient.Close() }()
 
 	ddl := fmt.Sprintf(schemaDDLTemplate, tableName)
 

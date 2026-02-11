@@ -378,8 +378,8 @@ func TestPartitionReader_ProcessDataChangeRecord(t *testing.T) {
 		commitTs := time.Date(2024, 6, 15, 12, 0, 0, 0, time.UTC)
 		record := &dataChangeRecord{
 			CommitTimestamp: commitTs,
-			TableName:      "Users",
-			ModType:        "INSERT",
+			TableName:       "Users",
+			ModType:         "INSERT",
 		}
 
 		err := reader.processDataChangeRecord(context.Background(), record)

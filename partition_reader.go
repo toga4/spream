@@ -22,8 +22,8 @@ type partitionReader struct {
 	spannerClient    *spanner.Client
 	streamName       string
 	partitionStorage PartitionStorage
-	consumer Consumer
-	tracker  *inflightTracker
+	consumer         Consumer
+	tracker          *inflightTracker
 }
 
 func newPartitionReader(

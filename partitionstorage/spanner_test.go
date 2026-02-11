@@ -3,10 +3,10 @@ package partitionstorage
 import (
 	"context"
 	"fmt"
+	"github.com/google/go-cmp/cmp"
 	"log"
 	"math/rand/v2"
 	"os"
-	"github.com/google/go-cmp/cmp"
 	"strconv"
 	"testing"
 	"time"
@@ -106,7 +106,7 @@ func ensureInstance(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer instanceAdminClient.Close()
+	defer func() { _ = instanceAdminClient.Close() }()
 
 	// Reuse the instance if it already exists.
 	_, err = instanceAdminClient.GetInstance(ctx, &instancepb.GetInstanceRequest{
@@ -159,7 +159,7 @@ func scheduleInstanceDeletion(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("cloudtasks.NewClient: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	task := &cloudtaskspb.Task{
 		ScheduleTime: timestamppb.New(time.Now().Add(55 * time.Minute)),
@@ -240,7 +240,7 @@ func createEmulatorInstance(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer instanceAdminClient.Close()
+	defer func() { _ = instanceAdminClient.Close() }()
 
 	op, err := instanceAdminClient.CreateInstance(ctx, &instancepb.CreateInstanceRequest{
 		Parent:     "projects/" + testProjectID,
@@ -277,11 +277,11 @@ func createTestDatabase(ctx context.Context, t *testing.T, ddlStatements ...stri
 		ExtraStatements: ddlStatements,
 	})
 	if err != nil {
-		databaseAdminClient.Close()
+		_ = databaseAdminClient.Close()
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	if _, err := op.Wait(ctx); err != nil {
-		databaseAdminClient.Close()
+		_ = databaseAdminClient.Close()
 		t.Fatalf("Failed to create database: %v", err)
 	}
 
@@ -294,10 +294,10 @@ func createTestDatabase(ctx context.Context, t *testing.T, ddlStatements ...stri
 			}); err != nil {
 				t.Logf("Failed to drop database %s: %v", dbPath, err)
 			}
-			databaseAdminClient.Close()
+			_ = databaseAdminClient.Close()
 		})
 	} else {
-		databaseAdminClient.Close()
+		_ = databaseAdminClient.Close()
 	}
 
 	return dbPath

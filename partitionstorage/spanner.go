@@ -2,6 +2,7 @@ package partitionstorage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -54,11 +55,10 @@ func (s *SpannerPartitionStorage) GetUnfinishedMinWatermarkPartition(ctx context
 	defer iter.Stop()
 
 	r, err := iter.Next()
-	switch err {
-	case iterator.Done:
-		return nil, nil
-	case nil:
-	default:
+	if err != nil {
+		if errors.Is(err, iterator.Done) {
+			return nil, nil
+		}
 		return nil, err
 	}
 

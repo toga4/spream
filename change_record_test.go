@@ -173,9 +173,9 @@ func TestDataChangeRecord_DecodeToNonSpannerType(t *testing.T) {
 func TestDataChangeRecord_DecodeToNonSpannerType_EmptySlices(t *testing.T) {
 	record := &dataChangeRecord{
 		CommitTimestamp: time.Now(),
-		ColumnTypes:    nil,
-		Mods:           nil,
-		ModType:        "DELETE",
+		ColumnTypes:     nil,
+		Mods:            nil,
+		ModType:         "DELETE",
 	}
 
 	want := &DataChangeRecord{

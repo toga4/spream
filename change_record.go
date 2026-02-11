@@ -57,7 +57,7 @@ const (
 	TypeCode_FLOAT32   TypeCode = "FLOAT32"
 	TypeCode_PROTO     TypeCode = "PROTO"
 	TypeCode_ENUM      TypeCode = "ENUM"
-	TypeCode_UUID TypeCode = "UUID"
+	TypeCode_UUID      TypeCode = "UUID"
 )
 
 // Mod contains the keys and the values of the changed records.
