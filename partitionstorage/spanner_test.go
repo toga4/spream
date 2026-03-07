@@ -3,91 +3,247 @@ package partitionstorage
 import (
 	"context"
 	"fmt"
+	"github.com/google/go-cmp/cmp"
 	"log"
+	"math/rand/v2"
 	"os"
-	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
+	cloudtasks "cloud.google.com/go/cloudtasks/apiv2"
+	"cloud.google.com/go/cloudtasks/apiv2/cloudtaskspb"
 	"cloud.google.com/go/spanner"
 	database "cloud.google.com/go/spanner/admin/database/apiv1"
 	"cloud.google.com/go/spanner/admin/database/apiv1/databasepb"
 	instance "cloud.google.com/go/spanner/admin/instance/apiv1"
 	"cloud.google.com/go/spanner/admin/instance/apiv1/instancepb"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
+	tcspanner "github.com/testcontainers/testcontainers-go/modules/gcloud/spanner"
 	"github.com/toga4/spream"
-	"google.golang.org/api/iterator"
+	"google.golang.org/api/option"
+	"google.golang.org/api/option/internaloption"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+type spannerBackend int
+
 const (
+	backendNone     spannerBackend = iota // Spanner is not available
+	backendEmulator                       // emulator
+	backendReal                           // real Spanner
+
+	// realTestInstanceID is the fixed instance name reused for real Spanner tests.
+	realTestInstanceID = "spream-test"
+
+	// cloudTasksQueuePath is the Cloud Tasks queue path for scheduling deletion tasks.
+	cloudTasksQueuePath = "projects/spream/locations/us-central1/queues/spream-test-cleanup"
+
+	// cloudTasksServiceAccount is the service account Cloud Tasks uses for DELETE requests.
+	cloudTasksServiceAccount = "github-actions@spream.iam.gserviceaccount.com"
+)
+
+var (
 	testProjectID    = "test-project"
 	testInstanceID   = "test-instance"
-	testDatabaseID   = "test-database"
-	testProjectPath  = "projects/" + testProjectID
-	testInstancePath = testProjectPath + "/instances/" + testInstanceID
-	testDatabasePath = testInstancePath + "/databases/" + testDatabaseID
-	testTableName    = "PartitionMetadata"
+	testInstancePath string
+
+	backend              spannerBackend
+	spannerClientOptions []option.ClientOption
 )
 
 func TestMain(m *testing.M) {
-	close := launchEmulatorOnDocker()
+	var cleanup func()
+
+	if projectID := os.Getenv("SPANNER_PROJECT_ID"); projectID != "" {
+		// Real Spanner mode
+		testProjectID = projectID
+		testInstanceID = realTestInstanceID
+		testInstancePath = fmt.Sprintf("projects/%s/instances/%s", testProjectID, testInstanceID)
+
+		ctx := context.Background()
+		if err := ensureInstance(ctx); err != nil {
+			log.Fatalf("Failed to ensure Spanner instance: %v", err)
+		}
+		// Instance deletion is delegated to Cloud Tasks, so no cleanup is needed.
+		backend = backendReal
+	} else {
+		// Emulator mode
+		testInstancePath = fmt.Sprintf("projects/%s/instances/%s", testProjectID, testInstanceID)
+
+		var err error
+		cleanup, err = tryLaunchEmulatorOnDocker()
+		if err != nil {
+			log.Printf("Spanner emulator not available: %v. Skipping Spanner tests.", err)
+		} else {
+			backend = backendEmulator
+		}
+	}
+
 	code := m.Run()
-	close()
+
+	if cleanup != nil {
+		cleanup()
+	}
 	os.Exit(code)
+}
+
+// requireSpanner skips the test when the Spanner backend (emulator or real Spanner) is not available.
+func requireSpanner(t *testing.T) {
+	t.Helper()
+	if backend == backendNone {
+		t.Skip("Spanner not available")
+	}
+}
+
+// ensureInstance reuses an existing instance or creates a new one if none exists.
+// On creation, it schedules a Cloud Tasks deletion task before creating the instance.
+func ensureInstance(ctx context.Context) error {
+	instanceAdminClient, err := instance.NewInstanceAdminClient(ctx, spannerClientOptions...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = instanceAdminClient.Close() }()
+
+	// Reuse the instance if it already exists.
+	_, err = instanceAdminClient.GetInstance(ctx, &instancepb.GetInstanceRequest{
+		Name: testInstancePath,
+	})
+	if err == nil {
+		log.Printf("Reusing existing Spanner instance: %s", testInstancePath)
+		return nil
+	}
+	if status.Code(err) != codes.NotFound {
+		return fmt.Errorf("GetInstance failed: %w", err)
+	}
+
+	// The instance does not exist, so create a new one.
+	// Schedule a Cloud Tasks deletion task before creating the instance.
+	// If task creation fails, do not create the instance (to prevent billing).
+	if err := scheduleInstanceDeletion(ctx); err != nil {
+		return fmt.Errorf("scheduleInstanceDeletion failed (aborting instance creation): %w", err)
+	}
+
+	op, err := instanceAdminClient.CreateInstance(ctx, &instancepb.CreateInstanceRequest{
+		Parent:     "projects/" + testProjectID,
+		InstanceId: testInstanceID,
+		Instance: &instancepb.Instance{
+			Config:          fmt.Sprintf("projects/%s/instanceConfigs/regional-us-central1", testProjectID),
+			DisplayName:     testInstanceID,
+			ProcessingUnits: 100,
+		},
+	})
+	if err != nil {
+		// Reuse the instance if another concurrent test run has already created it.
+		if status.Code(err) == codes.AlreadyExists {
+			log.Printf("Instance already created by another process, reusing: %s", testInstancePath)
+			return nil
+		}
+		return fmt.Errorf("CreateInstance failed: %w", err)
+	}
+
+	if _, err = op.Wait(ctx); err != nil {
+		return fmt.Errorf("CreateInstance operation failed: %w", err)
+	}
+	log.Printf("Created new Spanner instance: %s", testInstancePath)
+	return nil
+}
+
+// scheduleInstanceDeletion creates a Cloud Tasks HTTP task to delete the instance after 55 minutes.
+// It uses the GitHub Actions SA OAuthToken.
+func scheduleInstanceDeletion(ctx context.Context) error {
+	client, err := cloudtasks.NewClient(ctx)
+	if err != nil {
+		return fmt.Errorf("cloudtasks.NewClient: %w", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	task := &cloudtaskspb.Task{
+		ScheduleTime: timestamppb.New(time.Now().Add(55 * time.Minute)),
+		MessageType: &cloudtaskspb.Task_HttpRequest{
+			HttpRequest: &cloudtaskspb.HttpRequest{
+				HttpMethod: cloudtaskspb.HttpMethod_DELETE,
+				Url:        fmt.Sprintf("https://spanner.googleapis.com/v1/%s", testInstancePath),
+				AuthorizationHeader: &cloudtaskspb.HttpRequest_OauthToken{
+					OauthToken: &cloudtaskspb.OAuthToken{
+						ServiceAccountEmail: cloudTasksServiceAccount,
+					},
+				},
+			},
+		},
+	}
+
+	created, err := client.CreateTask(ctx, &cloudtaskspb.CreateTaskRequest{
+		Parent: cloudTasksQueuePath,
+		Task:   task,
+	})
+	if err != nil {
+		return fmt.Errorf("CreateTask: %w", err)
+	}
+	log.Printf("Scheduled instance deletion task: %s (executes at %s)", created.GetName(), created.GetScheduleTime().AsTime())
+	return nil
+}
+
+func generateUniqueName(prefix string) string {
+	return fmt.Sprintf("%s_%s", prefix, strconv.FormatUint(rand.Uint64(), 36))
+}
+
+// tryLaunchEmulatorOnDocker attempts to launch the emulator and returns a cleanup function.
+// It recovers from panics caused by Docker not being available.
+func tryLaunchEmulatorOnDocker() (cleanup func(), err error) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("%v", r)
+			}
+		}()
+		cleanup = launchEmulatorOnDocker()
+	}()
+	<-done
+	return cleanup, err
 }
 
 func launchEmulatorOnDocker() func() {
 	ctx := context.Background()
 
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "gcr.io/cloud-spanner-emulator/emulator:latest",
-			ExposedPorts: []string{"9010/tcp"},
-			WaitingFor:   wait.ForListeningPort("9010/tcp"),
-		},
-		Started: true,
-	})
+	container, err := tcspanner.Run(ctx, "gcr.io/cloud-spanner-emulator/emulator:latest")
 	if err != nil {
 		log.Fatalf("Could not launch emulator on docker: %v", err)
 	}
-	terminateFunc := func() {
+
+	spannerClientOptions = []option.ClientOption{
+		option.WithEndpoint(container.URI()),
+		option.WithoutAuthentication(),
+		option.WithGRPCDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())),
+		internaloption.SkipDialSettingsValidation(),
+	}
+
+	if err := createEmulatorInstance(ctx); err != nil {
+		log.Fatalf("Could not create instance: %v", err)
+	}
+
+	return func() {
 		if err := container.Terminate(ctx); err != nil {
 			log.Fatalf("Could not terminate emulator on docker: %v", err)
 		}
 	}
-
-	host, err := container.Host(ctx)
-	if err != nil {
-		log.Fatalf("Could not get host: %v", err)
-	}
-
-	port, err := container.MappedPort(ctx, "9010/tcp")
-	if err != nil {
-		log.Fatalf("Could not get port: %v", err)
-	}
-
-	os.Setenv("SPANNER_EMULATOR_HOST", fmt.Sprintf("%s:%s", host, port.Port()))
-
-	if err := createInstance(ctx); err != nil {
-		log.Fatalf("Could not create instance: %v", err)
-	}
-	if err := createDatabase(ctx); err != nil {
-		log.Fatalf("Could not create database: %v", err)
-	}
-
-	return terminateFunc
 }
 
-func createInstance(ctx context.Context) error {
-	instanceAdminClient, err := instance.NewInstanceAdminClient(ctx)
+// createEmulatorInstance creates an instance on the emulator.
+func createEmulatorInstance(ctx context.Context) error {
+	instanceAdminClient, err := instance.NewInstanceAdminClient(ctx, spannerClientOptions...)
 	if err != nil {
 		return err
 	}
-	defer instanceAdminClient.Close()
+	defer func() { _ = instanceAdminClient.Close() }()
 
 	op, err := instanceAdminClient.CreateInstance(ctx, &instancepb.CreateInstanceRequest{
-		Parent:     testProjectPath,
+		Parent:     "projects/" + testProjectID,
 		InstanceId: testInstanceID,
 		Instance: &instancepb.Instance{
 			Config:      "emulator-config",
@@ -103,107 +259,85 @@ func createInstance(ctx context.Context) error {
 	return err
 }
 
-func createDatabase(ctx context.Context) error {
-	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx)
+// createTestDatabase creates a unique database with the given DDL statements and
+// returns the fully qualified database path.
+// When using real Spanner, t.Cleanup registers DropDatabase.
+func createTestDatabase(ctx context.Context, t *testing.T, ddlStatements ...string) string {
+	t.Helper()
+	dbID := generateUniqueName("db")
+
+	databaseAdminClient, err := database.NewDatabaseAdminClient(ctx, spannerClientOptions...)
 	if err != nil {
-		return err
+		t.Fatalf("Failed to create database admin client: %v", err)
 	}
-	defer databaseAdminClient.Close()
 
 	op, err := databaseAdminClient.CreateDatabase(ctx, &databasepb.CreateDatabaseRequest{
 		Parent:          testInstancePath,
-		CreateStatement: fmt.Sprintf("CREATE DATABASE `%s`", testDatabaseID),
+		CreateStatement: fmt.Sprintf("CREATE DATABASE `%s`", dbID),
+		ExtraStatements: ddlStatements,
 	})
 	if err != nil {
-		return err
+		_ = databaseAdminClient.Close()
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	if _, err := op.Wait(ctx); err != nil {
+		_ = databaseAdminClient.Close()
+		t.Fatalf("Failed to create database: %v", err)
 	}
 
-	_, err = op.Wait(ctx)
-	return err
-}
+	dbPath := testInstancePath + "/databases/" + dbID
 
-func TestSpannerPartitionStorage_CreateTableIfNotExists(t *testing.T) {
-	ctx := context.Background()
-
-	client, err := spanner.NewClient(ctx, testDatabasePath)
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	defer client.Close()
-
-	storage := &SpannerPartitionStorage{
-		client:    client,
-		tableName: t.Name(),
+	if backend == backendReal {
+		t.Cleanup(func() {
+			if err := databaseAdminClient.DropDatabase(ctx, &databasepb.DropDatabaseRequest{
+				Database: dbPath,
+			}); err != nil {
+				t.Logf("Failed to drop database %s: %v", dbPath, err)
+			}
+			_ = databaseAdminClient.Close()
+		})
+	} else {
+		_ = databaseAdminClient.Close()
 	}
 
-	if err := storage.CreateTableIfNotExists(ctx); err != nil {
-		t.Error(err)
-		return
-	}
-
-	iter := client.Single().Read(ctx, storage.tableName, spanner.AllKeys(), []string{columnPartitionToken})
-	defer iter.Stop()
-
-	if _, err := iter.Next(); err != iterator.Done {
-		t.Errorf("Read from %s after SpannerPartitionStorage.CreateTableIfNotExists() = %v, want %v", storage.tableName, err, iterator.Done)
-	}
-
-	existsTable, err := existsTable(ctx, client, storage.tableName)
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	if !existsTable {
-		t.Errorf("SpannerPartitionStorage.existsTable() = %v, want %v", existsTable, false)
-	}
-}
-
-func existsTable(ctx context.Context, client *spanner.Client, tableName string) (bool, error) {
-	iter := client.Single().Query(ctx, spanner.Statement{
-		SQL: "SELECT 1 FROM information_schema.tables WHERE table_catalog = '' AND table_schema = '' AND table_name = @tableName",
-		Params: map[string]any{
-			"tableName": tableName,
-		},
-	})
-	defer iter.Stop()
-
-	if _, err := iter.Next(); err != nil {
-		if err == iterator.Done {
-			return false, nil
-		}
-		return false, err
-	}
-
-	return true, nil
+	return dbPath
 }
 
 func setupSpannerPartitionStorage(t *testing.T, ctx context.Context) *SpannerPartitionStorage {
 	t.Helper()
 
-	client, err := spanner.NewClient(ctx, testDatabasePath)
+	tableName := t.Name()
+	dbPath := createTestDatabase(ctx, t,
+		fmt.Sprintf(`CREATE TABLE %s (
+  PartitionToken STRING(MAX) NOT NULL,
+  ParentTokens ARRAY<STRING(MAX)> NOT NULL,
+  StartTimestamp TIMESTAMP NOT NULL,
+  EndTimestamp TIMESTAMP NOT NULL,
+  HeartbeatMillis INT64 NOT NULL,
+  State STRING(MAX) NOT NULL,
+  Watermark TIMESTAMP NOT NULL,
+  CreatedAt TIMESTAMP NOT NULL OPTIONS (allow_commit_timestamp=true),
+  ScheduledAt TIMESTAMP OPTIONS (allow_commit_timestamp=true),
+  RunningAt TIMESTAMP OPTIONS (allow_commit_timestamp=true),
+  FinishedAt TIMESTAMP OPTIONS (allow_commit_timestamp=true),
+) PRIMARY KEY (PartitionToken),
+  ROW DELETION POLICY (OLDER_THAN(FinishedAt, INTERVAL 1 DAY))`, tableName),
+	)
+
+	client, err := spanner.NewClient(ctx, dbPath, spannerClientOptions...)
 	if err != nil {
-		t.Error(err)
-		return nil
+		t.Fatalf("Failed to create spanner client: %v", err)
 	}
 	t.Cleanup(func() {
 		client.Close()
 	})
 
-	storage := &SpannerPartitionStorage{
-		client:    client,
-		tableName: t.Name(),
-	}
-
-	if err := storage.CreateTableIfNotExists(ctx); err != nil {
-		t.Error(err)
-		return storage
-	}
-
-	return storage
+	return NewSpanner(client, tableName)
 }
 
 func TestSpannerPartitionStorage_InitializeRootPartition(t *testing.T) {
+	requireSpanner(t)
+	t.Parallel()
 	ctx := context.Background()
 	storage := setupSpannerPartitionStorage(t, ctx)
 
@@ -260,13 +394,15 @@ func TestSpannerPartitionStorage_InitializeRootPartition(t *testing.T) {
 			t.Errorf("InitializeRootPartition(%q, %q, %q): %v", test.startTimestamp, test.endTimestamp, test.heartbeatInterval, err)
 			continue
 		}
-		if !reflect.DeepEqual(got, test.want) {
-			t.Errorf("InitializeRootPartition(%q, %q, %q): got = %+v, want %+v", test.startTimestamp, test.endTimestamp, test.heartbeatInterval, got, test.want)
+		if diff := cmp.Diff(test.want, got); diff != "" {
+			t.Errorf("InitializeRootPartition(%q, %q, %q) mismatch (-want +got):\n%s", test.startTimestamp, test.endTimestamp, test.heartbeatInterval, diff)
 		}
 	}
 }
 
 func TestSpannerPartitionStorage_Read(t *testing.T) {
+	requireSpanner(t)
+	t.Parallel()
 	ctx := context.Background()
 	storage := setupSpannerPartitionStorage(t, ctx)
 
@@ -322,8 +458,8 @@ func TestSpannerPartitionStorage_Read(t *testing.T) {
 		}
 
 		want := []string{"scheduled", "running"}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("GetInterruptedPartitions(ctx) = %+v, want = %+v", got, want)
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("GetInterruptedPartitions(ctx) mismatch (-want +got):\n%s", diff)
 		}
 	})
 
@@ -340,13 +476,15 @@ func TestSpannerPartitionStorage_Read(t *testing.T) {
 		}
 
 		want := []string{"created1"}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("GetSchedulablePartitions(ctx, %q) = %+v, want = %+v", timestamp, got, want)
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("GetSchedulablePartitions(ctx, %q) mismatch (-want +got):\n%s", timestamp, diff)
 		}
 	})
 }
 
 func TestSpannerPartitionStorage_AddChildPartitions(t *testing.T) {
+	requireSpanner(t)
+	t.Parallel()
 	ctx := context.Background()
 	storage := setupSpannerPartitionStorage(t, ctx)
 
@@ -409,12 +547,14 @@ func TestSpannerPartitionStorage_AddChildPartitions(t *testing.T) {
 			Watermark:       childStartTimestamp,
 		},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("GetSchedulablePartitions(ctx, %+v, %+v): got = %+v, want %+v", parent, record, got, want)
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("AddChildPartitions(ctx) mismatch (-want +got):\n%s", diff)
 	}
 }
 
 func TestSpannerPartitionStorage_Update(t *testing.T) {
+	requireSpanner(t)
+	t.Parallel()
 	ctx := context.Background()
 	storage := setupSpannerPartitionStorage(t, ctx)
 
@@ -483,8 +623,8 @@ func TestSpannerPartitionStorage_Update(t *testing.T) {
 			{PartitionToken: "token1", State: spream.StateScheduled},
 			{PartitionToken: "token2", State: spream.StateScheduled},
 		}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("UpdateToScheduled(ctx, %+v): got = %+v, want %+v", partitions, got, want)
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("UpdateToScheduled(ctx) mismatch (-want +got):\n%s", diff)
 		}
 	})
 
@@ -514,8 +654,8 @@ func TestSpannerPartitionStorage_Update(t *testing.T) {
 		}
 
 		want := partition{PartitionToken: "token1", State: spream.StateRunning}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("UpdateToRunning(ctx, %+v): got = %+v, want %+v", partitions[0], got, want)
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("UpdateToRunning(ctx) mismatch (-want +got):\n%s", diff)
 		}
 	})
 
@@ -545,8 +685,8 @@ func TestSpannerPartitionStorage_Update(t *testing.T) {
 		}
 
 		want := partition{PartitionToken: "token1", State: spream.StateFinished}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("UpdateToFinished(ctx, %+v): got = %+v, want %+v", partitions[0], got, want)
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("UpdateToFinished(ctx) mismatch (-want +got):\n%s", diff)
 		}
 	})
 
@@ -578,8 +718,8 @@ func TestSpannerPartitionStorage_Update(t *testing.T) {
 		}
 
 		want := partition{PartitionToken: "token1", Watermark: timestamp}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("UpdateWatermark(ctx, %+v, %q): got = %+v, want %+v", partitions[0], timestamp, got, want)
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("UpdateWatermark(ctx) mismatch (-want +got):\n%s", diff)
 		}
 	})
 

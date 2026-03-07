@@ -1,7 +1,9 @@
+// Command spream is a sample CLI tool for tailing Spanner change streams.
 package main
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -9,14 +11,21 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"cloud.google.com/go/spanner"
+	database "cloud.google.com/go/spanner/admin/database/apiv1"
+	"cloud.google.com/go/spanner/admin/database/apiv1/databasepb"
 	"cloud.google.com/go/spanner/apiv1/spannerpb"
 	"github.com/toga4/spream"
 	"github.com/toga4/spream/partitionstorage"
 )
+
+//go:embed schema.sql
+var schemaDDLTemplate string
 
 type flags struct {
 	database          string
@@ -27,6 +36,7 @@ type flags struct {
 	priority          spannerpb.RequestOptions_Priority
 	metadataTableName string
 	metadataDatabase  string
+	createTable       bool
 }
 
 const (
@@ -51,6 +61,7 @@ Options:
   --heartbeat-interval          Heartbeat interval with time.Duration format  (default: 10s)
   --priority [high|medium|low]  Request priority for Cloud Spanner            (default: high)
   --metadata-database           Database name of partition metadata table     (default: same as database option)
+  --create-table                Create partition metadata table if not exists (default: false)
   -h, --help                    Print this message
 
 `, cmd)
@@ -65,6 +76,8 @@ Options:
 	fs.StringVar(&flags.metadataTableName, "metadata-table", "", "")
 	fs.StringVar(&flags.metadataDatabase, "metadata-database", flags.database, "")
 	fs.DurationVar(&flags.heartbeatInterval, "heartbeat-interval", 10*time.Second, "")
+
+	fs.BoolVar(&flags.createTable, "create-table", false, "")
 
 	var start, end, priority string
 	fs.StringVar(&start, "start", "", "")
@@ -87,7 +100,7 @@ Options:
 		t, err := time.Parse(time.RFC3339, start)
 		if err != nil {
 			fs.Usage()
-			return nil, fmt.Errorf("invalid start timestamp: %v", err)
+			return nil, fmt.Errorf("invalid start timestamp: %w", err)
 		}
 		flags.startTimestamp = t
 	}
@@ -95,7 +108,7 @@ Options:
 		t, err := time.Parse(time.RFC3339, end)
 		if err != nil {
 			fs.Usage()
-			return nil, fmt.Errorf("invalid end timestamp: %v", err)
+			return nil, fmt.Errorf("invalid end timestamp: %w", err)
 		}
 		flags.endTimestamp = t
 	}
@@ -121,7 +134,7 @@ type jsonOutputConsumer struct {
 	mu  sync.Mutex
 }
 
-func (l *jsonOutputConsumer) Consume(change *spream.DataChangeRecord) error {
+func (l *jsonOutputConsumer) Consume(_ context.Context, change *spream.DataChangeRecord) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return json.NewEncoder(l.out).Encode(change)
@@ -134,10 +147,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	spannerClient, err := spanner.NewClient(ctx, flags.database)
+	spannerClient, err := spanner.NewClientWithConfig(ctx, flags.database, spanner.ClientConfig{
+		QueryOptions: spanner.QueryOptions{
+			Priority: flags.priority,
+		},
+		ApplyOptions: []spanner.ApplyOption{
+			spanner.Priority(flags.priority),
+		},
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -148,40 +168,102 @@ func main() {
 	if flags.metadataTableName == "" {
 		partitionStorage = partitionstorage.NewInmemory()
 	} else {
-		metadataSpannerClient, err := spanner.NewClient(ctx, flags.metadataDatabase)
+		metadataSpannerClient, err := spanner.NewClientWithConfig(ctx, flags.metadataDatabase, spanner.ClientConfig{
+			QueryOptions: spanner.QueryOptions{
+				Priority: flags.priority,
+			},
+			ApplyOptions: []spanner.ApplyOption{
+				spanner.Priority(flags.priority),
+			},
+		})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		defer metadataSpannerClient.Close()
-		ps := partitionstorage.NewSpanner(metadataSpannerClient, flags.metadataTableName)
-		if err := ps.CreateTableIfNotExists(ctx); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+
+		if flags.createTable {
+			if err := createPartitionMetadataTable(ctx, metadataSpannerClient.DatabaseName(), flags.metadataTableName); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
 		}
-		partitionStorage = ps
+
+		partitionStorage = partitionstorage.NewSpanner(metadataSpannerClient, flags.metadataTableName)
 	}
 
-	options := []spream.Option{}
-	if !flags.startTimestamp.IsZero() {
-		options = append(options, spream.WithStartTimestamp(flags.startTimestamp))
-	}
-	if !flags.endTimestamp.IsZero() {
-		options = append(options, spream.WithEndTimestamp(flags.endTimestamp))
-	}
-	if flags.heartbeatInterval != 0 {
-		options = append(options, spream.WithHeartbeatInterval(flags.heartbeatInterval))
-	}
-	if flags.priority != spannerpb.RequestOptions_PRIORITY_UNSPECIFIED {
-		options = append(options, spream.WithSpannerRequestPriority(flags.priority))
+	cfg := &spream.Config{
+		SpannerClient:     spannerClient,
+		StreamName:        flags.streamName,
+		PartitionStorage:  partitionStorage,
+		Consumer:          &jsonOutputConsumer{out: os.Stdout},
+		StartTimestamp:    flags.startTimestamp,
+		EndTimestamp:      flags.endTimestamp,
+		HeartbeatInterval: flags.heartbeatInterval,
 	}
 
-	subscriber := spream.NewSubscriber(spannerClient, flags.streamName, partitionStorage, options...)
-	consumer := &jsonOutputConsumer{out: os.Stdout}
-
-	fmt.Fprintln(os.Stderr, "Waiting changes...")
-	if err := subscriber.Subscribe(ctx, consumer); err != nil && !errors.Is(ctx.Err(), context.Canceled) {
+	subscriber, err := spream.NewSubscriber(cfg)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+
+	fmt.Fprintln(os.Stderr, "Waiting changes...")
+
+	// Subscribe blocks until completion; run concurrently to allow signal handling below.
+	done := make(chan error, 1)
+	go func() {
+		done <- subscriber.Subscribe()
+	}()
+
+	// Wait for either a signal or Subscribe to return (e.g., EndTimestamp reached, init error).
+	select {
+	case <-ctx.Done():
+		// On interrupt, attempt graceful shutdown with timeout; force close if it exceeds the deadline.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := subscriber.Shutdown(shutdownCtx); err != nil {
+			_ = subscriber.Close()
+		}
+	case err := <-done:
+		// Subscribe returned naturally (EndTimestamp reached or error).
+		if err != nil && !errors.Is(err, spream.ErrShutdown) {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if err := <-done; err != nil && !errors.Is(err, spream.ErrShutdown) {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func createPartitionMetadataTable(ctx context.Context, databaseName, tableName string) error {
+	adminClient, err := database.NewDatabaseAdminClient(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = adminClient.Close() }()
+
+	ddl := fmt.Sprintf(schemaDDLTemplate, tableName)
+
+	var statements []string
+	for _, s := range strings.Split(ddl, ";") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			statements = append(statements, s)
+		}
+	}
+
+	op, err := adminClient.UpdateDatabaseDdl(ctx, &databasepb.UpdateDatabaseDdlRequest{
+		Database:   databaseName,
+		Statements: statements,
+	})
+	if err != nil {
+		return err
+	}
+
+	return op.Wait(ctx)
 }

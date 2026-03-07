@@ -1,20 +1,28 @@
 # spream
 
-[![Test](https://github.com/toga4/spream/actions/workflows/test.yaml/badge.svg)](https://github.com/toga4/spream/actions/workflows/test.yaml)
+[![CI](https://github.com/toga4/spream/actions/workflows/ci.yaml/badge.svg)](https://github.com/toga4/spream/actions/workflows/ci.yaml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/toga4/spream.svg)](https://pkg.go.dev/github.com/toga4/spream)
 
 Cloud Spanner Change Streams Subscriber for Go
 
-### Sypnosis
+## Synopsis
 
-This library is an implementation to subscribe a change stream's records of Google Cloud Spanner in Go.
-It is heavily inspired by the SpannerIO connector of the [Apache Beam SDK](https://github.com/apache/beam) and is compatible with the PartitionMetadata data model.
+A Go library for subscribing to Google Cloud Spanner change streams.
+It is heavily inspired by the SpannerIO connector of the [Apache Beam SDK](https://github.com/apache/beam) and uses a compatible PartitionMetadata data model.
 
-### Motivation
+## Motivation
 
-To read a change streams, Google Cloud offers [Dataflow connector](https://cloud.google.com/spanner/docs/change-streams/use-dataflow) as a scalable and reliable solution, but in some cases the abstraction and capabilities of Dataflow pipelines can be too much (or is simply too expensive).
-For more flexibility, use the change stream API directly, but it is a bit complex.
-This library aims to make reading change streams more flexible and casual, while maintaining an easily transition to the use of Dataflow connectors as needed.
+For reading change streams, Google Cloud offers the [Dataflow connector](https://cloud.google.com/spanner/docs/change-streams/use-dataflow) as a scalable and reliable solution. However, the abstraction and capabilities of Dataflow pipelines can be overkill for some use cases (or simply too expensive).
+Using the change stream API directly offers more flexibility, but it's fairly complex.
+This library aims to make reading change streams simpler and more accessible, while maintaining an easy transition to Dataflow when needed.
+
+For design philosophy and key decisions, see [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Installation
+
+```console
+$ go get github.com/toga4/spream
+```
 
 ## Example Usage
 
@@ -30,6 +38,8 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"syscall"
+	"time"
 
 	"cloud.google.com/go/spanner"
 	"github.com/toga4/spream"
@@ -37,7 +47,7 @@ import (
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	database := fmt.Sprintf("projects/%s/instances/%s/databases/%s", "foo-project", "foo-instance", "foo-database")
@@ -47,18 +57,42 @@ func main() {
 	}
 	defer spannerClient.Close()
 
+	// Create partition metadata table before use. See partitionstorage/schema.sql for DDL.
 	partitionMetadataTableName := "PartitionMetadata_FooStream"
 	partitionStorage := partitionstorage.NewSpanner(spannerClient, partitionMetadataTableName)
-	if err := partitionStorage.CreateTableIfNotExists(ctx); err != nil {
+
+	subscriber, err := spream.NewSubscriber(&spream.Config{
+		SpannerClient:    spannerClient,
+		StreamName:       "FooStream",
+		PartitionStorage: partitionStorage,
+		Consumer:         &Logger{out: os.Stdout},
+	})
+	if err != nil {
 		panic(err)
 	}
 
-	changeStreamName := "FooStream"
-	subscriber := spream.NewSubscriber(spannerClient, changeStreamName, partitionStorage)
-
 	fmt.Fprintf(os.Stderr, "Reading the stream...\n")
-	logger := &Logger{out: os.Stdout}
-	if err := subscriber.Subscribe(ctx, logger); err != nil && !errors.Is(ctx.Err(), context.Canceled) {
+
+	done := make(chan error, 1)
+	go func() {
+		done <- subscriber.Subscribe()
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := subscriber.Shutdown(shutdownCtx); err != nil {
+			_ = subscriber.Close()
+		}
+	case err := <-done:
+		if err != nil && !errors.Is(err, spream.ErrShutdown) {
+			panic(err)
+		}
+		return
+	}
+
+	if err := <-done; err != nil && !errors.Is(err, spream.ErrShutdown) {
 		panic(err)
 	}
 }
@@ -68,7 +102,7 @@ type Logger struct {
 	mu  sync.Mutex
 }
 
-func (l *Logger) Consume(change *spream.DataChangeRecord) error {
+func (l *Logger) Consume(_ context.Context, change *spream.DataChangeRecord) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return json.NewEncoder(l.out).Encode(change)
@@ -77,7 +111,7 @@ func (l *Logger) Consume(change *spream.DataChangeRecord) error {
 
 ## CLI
 
-Use the CLI as a tool for tracking change streams or as a more detailed implementation example.
+A command-line tool for tailing change streams. Also serves as a reference implementation.
 
 ### Installation
 
@@ -99,6 +133,7 @@ Options:
   --heartbeat-interval          Heartbeat interval with time.Duration format  (default: 10s)
   --priority [high|medium|low]  Request priority for Cloud Spanner            (default: high)
   --metadata-database           Database name of partition metadata table     (default: same as database option)
+  --create-table                Create partition metadata table if not exists (default: false)
   -h, --help                    Print this message
 ```
 
@@ -112,9 +147,16 @@ Waiting changes...
 {"commit_timestamp":"2023-01-08T05:47:59.117807Z","record_sequence":"00000000","server_transaction_id":"ODkwNDMzNDgxMDU2NzAwMDM2MA==","is_last_record_in_transaction_in_partition":true,"table_name":"Singers","column_types":[{"name":"SingerId","type":{"code":"INT64"},"is_primary_key":true,"ordinal_position":1},{"name":"Name","type":{"code":"STRING"},"ordinal_position":2}],"mods":[{"keys":{"SingerId":"1"},"old_values":{"Name":"bar"}}],"mod_type":"DELETE","value_capture_type":"OLD_AND_NEW_VALUES","number_of_records_in_transaction":1,"number_of_partitions_in_transaction":1,"transaction_tag":"","is_system_transaction":false}
 ```
 
+## Limitations
+
+- **Single process only**: spream does not support distributed coordination. For scale-out, consider [Dataflow connector](https://cloud.google.com/spanner/docs/change-streams/use-dataflow). The shared PartitionMetadata schema enables migration.
+- **At-least-once delivery**: Records may be delivered multiple times on crash recovery or network issues. Exactly-once is not guaranteed; consumers must handle duplicates if needed.
+- **Ordering**: Records within a partition are delivered in commit timestamp order. Across partitions, no ordering is guaranteed.
+- **InmemoryPartitionStorage**: Does not persist data. All state is lost when the process exits. Use `SpannerPartitionStorage` for production workloads.
+
 ## Credits
 
-Heavily inspired by below projects.
+Heavily inspired by the following projects:
 
 - The SpannerIO connector of the Apache Beam SDK. (https://github.com/apache/beam)
 - spanner-change-streams-tail (https://github.com/cloudspannerecosystem/spanner-change-streams-tail)

@@ -10,12 +10,16 @@ import (
 )
 
 // InmemoryPartitionStorage implements PartitionStorage that stores PartitionMetadata in memory.
+// It is intended for development and testing only.
+// Data is not persisted; all state is lost when the process exits.
+// Use SpannerPartitionStorage for production workloads.
 type InmemoryPartitionStorage struct {
 	mu sync.Mutex
 	m  map[string]*spream.PartitionMetadata
 }
 
-// NewInmemory creates new instance of InmemoryPartitionStorage
+// NewInmemory creates a new instance of InmemoryPartitionStorage.
+// See InmemoryPartitionStorage for usage caveats.
 func NewInmemory() *InmemoryPartitionStorage {
 	return &InmemoryPartitionStorage{
 		m: make(map[string]*spream.PartitionMetadata),
