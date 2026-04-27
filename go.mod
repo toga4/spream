@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	cloud.google.com/go/cloudtasks v1.16.0
-	cloud.google.com/go/spanner v1.90.0
+	cloud.google.com/go/spanner v1.91.0
 	github.com/google/go-cmp v0.7.0
 	github.com/testcontainers/testcontainers-go/modules/gcloud v0.42.0
 	golang.org/x/sync v0.20.0
