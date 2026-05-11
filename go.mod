@@ -3,12 +3,12 @@ module github.com/toga4/spream
 go 1.25.0
 
 require (
-	cloud.google.com/go/cloudtasks v1.17.0
+	cloud.google.com/go/cloudtasks v1.18.0
 	cloud.google.com/go/spanner v1.91.0
 	github.com/google/go-cmp v0.7.0
 	github.com/testcontainers/testcontainers-go/modules/gcloud v0.42.0
 	golang.org/x/sync v0.20.0
-	google.golang.org/api v0.277.0
+	google.golang.org/api v0.278.0
 	google.golang.org/grpc v1.81.0
 	google.golang.org/protobuf v1.36.11
 )
