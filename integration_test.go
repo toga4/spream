@@ -553,7 +553,7 @@ func TestSubscriber_DataChangeRecord(t *testing.T) {
 	//   INT64           -> string      (e.g. "1")
 	//   FLOAT32/FLOAT64 -> float64     (e.g. 0.25)
 	//   BOOL            -> bool        (e.g. true)
-	//   TIMESTAMP       -> string      (RFC3339; emulator truncates nanoseconds)
+	//   TIMESTAMP       -> string      (RFC3339)
 	//   DATE            -> string      (e.g. "2023-01-01")
 	//   STRING          -> string      (e.g. "string")
 	//   BYTES           -> string      (base64, e.g. "Ynl0ZXM=")
@@ -591,14 +591,14 @@ func TestSubscriber_DataChangeRecord(t *testing.T) {
 				Keys: map[string]any{"Int64": "1"},
 				NewValues: map[string]any{
 					"Bool": true, "Float32": 0.25, "Float64": 0.5,
-					"Timestamp": "2023-12-31T23:59:59Z", "Date": "2023-01-01",
+					"Timestamp": "2023-12-31T23:59:59.999999999Z", "Date": "2023-01-01",
 					"String": "string", "Bytes": "Ynl0ZXM=",
 					"Numeric": "123.456", "Json": `{"name":"foobar"}`,
 					"BoolArray":      []any{true, false},
 					"Int64Array":     []any{"1", "2"},
 					"Float32Array":   []any{0.25, 0.75},
 					"Float64Array":   []any{0.5, 0.25},
-					"TimestampArray": []any{"2023-12-31T23:59:59Z", "2023-01-01T00:00:00Z"},
+					"TimestampArray": []any{"2023-12-31T23:59:59.999999999Z", "2023-01-01T00:00:00Z"},
 					"DateArray":      []any{"2023-01-01", "2023-02-01"},
 					"StringArray":    []any{"string1", "string2"},
 					"BytesArray":     []any{"Ynl0ZXMx", "Ynl0ZXMy"},
@@ -641,14 +641,14 @@ func TestSubscriber_DataChangeRecord(t *testing.T) {
 				Keys: map[string]any{"Int64": "1"},
 				NewValues: map[string]any{
 					"Bool": false, "Float32": 0.25, "Float64": 0.5,
-					"Timestamp": "2023-12-31T23:59:59Z", "Date": "2023-01-01",
+					"Timestamp": "2023-12-31T23:59:59.999999999Z", "Date": "2023-01-01",
 					"String": "string", "Bytes": "Ynl0ZXM=",
 					"Numeric": "123.456", "Json": `{"name":"foobar"}`,
 					"BoolArray":      []any{true, false},
 					"Int64Array":     []any{"1", "2"},
 					"Float32Array":   []any{0.25, 0.75},
 					"Float64Array":   []any{0.5, 0.25},
-					"TimestampArray": []any{"2023-12-31T23:59:59Z", "2023-01-01T00:00:00Z"},
+					"TimestampArray": []any{"2023-12-31T23:59:59.999999999Z", "2023-01-01T00:00:00Z"},
 					"DateArray":      []any{"2023-01-01", "2023-02-01"},
 					"StringArray":    []any{"string1", "string2"},
 					"BytesArray":     []any{"Ynl0ZXMx", "Ynl0ZXMy"},
@@ -657,14 +657,14 @@ func TestSubscriber_DataChangeRecord(t *testing.T) {
 				},
 				OldValues: map[string]any{
 					"Bool": true, "Float32": 0.25, "Float64": 0.5,
-					"Timestamp": "2023-12-31T23:59:59Z", "Date": "2023-01-01",
+					"Timestamp": "2023-12-31T23:59:59.999999999Z", "Date": "2023-01-01",
 					"String": "string", "Bytes": "Ynl0ZXM=",
 					"Numeric": "123.456", "Json": `{"name":"foobar"}`,
 					"BoolArray":      []any{true, false},
 					"Int64Array":     []any{"1", "2"},
 					"Float32Array":   []any{0.25, 0.75},
 					"Float64Array":   []any{0.5, 0.25},
-					"TimestampArray": []any{"2023-12-31T23:59:59Z", "2023-01-01T00:00:00Z"},
+					"TimestampArray": []any{"2023-12-31T23:59:59.999999999Z", "2023-01-01T00:00:00Z"},
 					"DateArray":      []any{"2023-01-01", "2023-02-01"},
 					"StringArray":    []any{"string1", "string2"},
 					"BytesArray":     []any{"Ynl0ZXMx", "Ynl0ZXMy"},
@@ -707,14 +707,14 @@ func TestSubscriber_DataChangeRecord(t *testing.T) {
 				NewValues: map[string]any{},
 				OldValues: map[string]any{
 					"Bool": false, "Float32": 0.25, "Float64": 0.5,
-					"Timestamp": "2023-12-31T23:59:59Z", "Date": "2023-01-01",
+					"Timestamp": "2023-12-31T23:59:59.999999999Z", "Date": "2023-01-01",
 					"String": "string", "Bytes": "Ynl0ZXM=",
 					"Numeric": "123.456", "Json": `{"name":"foobar"}`,
 					"BoolArray":      []any{true, false},
 					"Int64Array":     []any{"1", "2"},
 					"Float32Array":   []any{0.25, 0.75},
 					"Float64Array":   []any{0.5, 0.25},
-					"TimestampArray": []any{"2023-12-31T23:59:59Z", "2023-01-01T00:00:00Z"},
+					"TimestampArray": []any{"2023-12-31T23:59:59.999999999Z", "2023-01-01T00:00:00Z"},
 					"DateArray":      []any{"2023-01-01", "2023-02-01"},
 					"StringArray":    []any{"string1", "string2"},
 					"BytesArray":     []any{"Ynl0ZXMx", "Ynl0ZXMy"},
