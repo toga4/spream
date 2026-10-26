@@ -3,12 +3,12 @@ module github.com/toga4/spream
 go 1.26.0
 
 require (
-	cloud.google.com/go/cloudtasks v1.20.0
+	cloud.google.com/go/cloudtasks v1.21.0
 	cloud.google.com/go/spanner v1.96.1
 	github.com/google/go-cmp v0.7.0
 	github.com/testcontainers/testcontainers-go/modules/gcloud v0.44.0
 	golang.org/x/sync v0.24.0
-	google.golang.org/api v0.304.0
+	google.golang.org/api v0.308.0
 	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.12
 )
@@ -94,7 +94,7 @@ require (
 	golang.org/x/time v0.16.0 // indirect
 	google.golang.org/genproto v0.0.0-20260715232425-e75dac1f907d // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260715232425-e75dac1f907d // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20261005182115-fad411399dd8 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20261019180522-ce908d29299b // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
